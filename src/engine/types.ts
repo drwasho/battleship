@@ -48,7 +48,14 @@ export interface ShotResult {
   target: Coord;
   hit: boolean;
   damage: number;
+  hitShipUid?: string;
   sunkShipUid?: string;
+}
+
+export interface EphemeralImpactMarker {
+  board: 'own' | 'target';
+  shipUid: string;
+  target: Coord;
 }
 
 export interface MoveOrder {
@@ -70,7 +77,9 @@ export interface PlayerState {
   ships: ShipInstance[];
   misses: Set<string>;
   ephemeralHits: Set<string>;
+  ephemeralImpactMarkers: EphemeralImpactMarker[];
   destroyedEnemyTypes: ShipTypeId[];
+  destroyedEnemyShipUids: string[];
 }
 
 export type Phase =
@@ -88,6 +97,7 @@ export interface GameState {
   phase: Phase;
   round: number;
   players: [PlayerState, PlayerState];
+  firedThisRound: [Set<string>, Set<string>];
   shotLog: ShotResult[];
   winner?: PlayerId;
 }

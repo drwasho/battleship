@@ -3,20 +3,24 @@ import { SHIP_BY_ID, SHIPS } from './engine/data';
 import { SeededRng } from './engine/rng';
 import {
   allShipsPlaced,
+  canShipFire,
   canMoveShip,
   clearEphemeral,
   hasWinner,
+  hasUnfiredShips,
   key,
+  nextFiringPlayer,
   placeShip,
   randomFleetPlacement,
   randomLegalShot,
   randomMovePlan,
+  resetFiringRound,
   resolveMovement,
   resolveShot,
   shipCells,
 } from './engine/rules';
 import { createInitialState } from './engine/state';
-import type { Coord, GameState, MoveOrder, Orientation, PlayerId, ShipInstance } from './engine/types';
+import type { Coord, GameState, MoveOrder, Orientation, PlayerId, ShipInstance, ShipTypeId } from './engine/types';
 import { BattleScene } from './render/scene';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
@@ -197,6 +201,7 @@ function startMenu(): void {
     ownShipHpPercent: new Map(),
     targetMisses: new Set(),
     targetEphemeralHits: new Set(),
+    ephemeralImpactMarkers: [],
     previewCells: [],
     previewColor: 0x66c9f0,
   });
@@ -208,7 +213,7 @@ function startGame(mode: '1p' | '2p'): void {
   activeViewer = 0;
   placementOrientation = 'H';
   movementOrientation = 'H';
-  selectedPlacementShipUid = game.players[0].ships[0].uid;
+  selectedPlacementShipUid = game.players[0].ships[0]!.uid;
   selectedFiringShipUid = null;
   selectedMoveShipUid = null;
   plannedMoves[0].clear();
@@ -224,14 +229,15 @@ async function onPlacementFinished(playerId: PlayerId): Promise<void> {
   if (playerId === 0) {
     if (game.mode === '1p') {
       randomFleetPlacement(game.players[1], rng);
+      resetFiringRound(game);
       game.phase = 'firing_p1';
       activeViewer = 0;
-      selectedFiringShipUid = game.players[0].ships.find((s) => !s.sunk)!.uid;
-      setNotice('Your fleet is deployed. Begin firing.', 'ok');
+      selectedFiringShipUid = pickDefaultFiringShip(0);
+      setNotice('Your fleet is deployed. Begin firing round 1.', 'ok');
       render();
     } else {
       game.phase = 'placement_p2';
-      selectedPlacementShipUid = game.players[1].ships[0].uid;
+      selectedPlacementShipUid = game.players[1].ships[0]!.uid;
       requestPass(1, 'Placement complete for Player 1', () => {
         clearNotice();
         render();
@@ -240,8 +246,9 @@ async function onPlacementFinished(playerId: PlayerId): Promise<void> {
     return;
   }
 
+  resetFiringRound(game);
   game.phase = 'firing_p1';
-  selectedFiringShipUid = game.players[0].ships.find((s) => !s.sunk)!.uid;
+  selectedFiringShipUid = pickDefaultFiringShip(0);
   requestPass(0, 'Both fleets deployed', () => {
     clearNotice();
     render();
@@ -261,6 +268,58 @@ function currentPlayerForPhase(): PlayerId | null {
   return null;
 }
 
+function currentActionLabel(): string {
+  if (!game) {
+    return '';
+  }
+  if (game.phase.startsWith('placement_')) {
+    return 'placing';
+  }
+  if (game.phase.startsWith('firing_')) {
+    return 'firing';
+  }
+  if (game.phase.startsWith('movement_')) {
+    return 'moving';
+  }
+  return '';
+}
+
+function displayPlayerLabel(playerId: PlayerId): string {
+  if (!game) {
+    return '';
+  }
+  if (game.mode === '1p') {
+    return playerId === 0 ? 'You' : 'Computer';
+  }
+  return game.players[playerId].name;
+}
+
+function shipNameFromUid(uid: string): string {
+  const parts = uid.split('-');
+  const maybeType = parts.slice(1).join('-') as ShipTypeId;
+  return SHIP_BY_ID[maybeType]?.name ?? uid;
+}
+
+function turnIndicatorText(): string {
+  if (!game || game.phase === 'game_over') {
+    return '';
+  }
+  const player = currentPlayerForPhase();
+  const action = currentActionLabel();
+  if (player === null || !action) {
+    return '';
+  }
+  return `${displayPlayerLabel(player)} ${action}`;
+}
+
+function pickDefaultFiringShip(playerId: PlayerId): string | null {
+  if (!game) {
+    return null;
+  }
+  const state = game;
+  return state.players[playerId].ships.find((s) => canShipFire(state, playerId, s.uid))?.uid ?? null;
+}
+
 function getPreviewCells(): Coord[] {
   if (!game) {
     return [];
@@ -276,7 +335,7 @@ function getPreviewCells(): Coord[] {
   }
   if ((game.phase === 'movement_p1' || game.phase === 'movement_p2') && hoverOwn && selectedMoveShipUid) {
     const player = game.players[activeViewer];
-    const ship = player.ships.find((s) => s.uid === selectedMoveShipUid);
+    const ship = player.ships.find((s) => s.uid === selectedMoveShipUid && !s.sunk && s.placed);
     if (!ship) {
       return [];
     }
@@ -284,6 +343,16 @@ function getPreviewCells(): Coord[] {
     return shipCells(copy);
   }
   return [];
+}
+
+function getMovementPreviewValidity(): boolean | null {
+  if (!game || !hoverOwn || !selectedMoveShipUid) {
+    return null;
+  }
+  if (game.phase !== 'movement_p1' && game.phase !== 'movement_p2') {
+    return null;
+  }
+  return canMoveShip(game, activeViewer, { shipUid: selectedMoveShipUid, to: hoverOwn, orientation: movementOrientation });
 }
 
 function renderSceneOnly(): void {
@@ -296,16 +365,59 @@ function renderSceneOnly(): void {
     hpMap.set(s.uid, s.hp / SHIP_BY_ID[s.typeId].maxHp);
   }
 
-  scene.renderState({
-    ownShips: me.ships,
+  const moveMode = game.phase === 'movement_p1' || game.phase === 'movement_p2';
+  const movementPreviewValidity = getMovementPreviewValidity();
+  const firingReadyShipUids = new Set<string>();
+  const firingSpentShipUids = new Set<string>();
+  if (game.phase === 'firing_p1' || game.phase === 'firing_p2') {
+    for (const ship of me.ships) {
+      if (!ship.placed || ship.sunk) {
+        continue;
+      }
+      if (canShipFire(game, activeViewer, ship.uid)) {
+        firingReadyShipUids.add(ship.uid);
+      } else {
+        firingSpentShipUids.add(ship.uid);
+      }
+    }
+  }
+  let ownShipsForScene = me.ships;
+  // During movement planning, preview *this viewer's* planned destinations by temporarily
+  // applying orders to their ships (purely visual; engine state updates only on resolveMovement).
+  // Important: keep showing the preview even after the phase advances (e.g. P1 finishes planning
+  // and we switch to movement_p2 while still on P1's view / pass overlay).
+  if (moveMode) {
+    const orders = plannedMoves[activeViewer];
+    if (orders.size) {
+      ownShipsForScene = me.ships.map((s) => {
+        const o = orders.get(s.uid);
+        if (!o || !s.placed || s.sunk) {
+          return s;
+        }
+        return { ...s, anchor: o.to, orientation: o.orientation };
+      });
+    }
+  }
+
+  const sceneState: Parameters<typeof scene.renderState>[0] = {
+    ownShips: ownShipsForScene,
     ownShipHpPercent: hpMap,
     targetMisses: me.misses,
     targetEphemeralHits: me.ephemeralHits,
+    ephemeralImpactMarkers: me.ephemeralImpactMarkers,
+    firingReadyShipUids,
+    firingSpentShipUids,
     previewCells: getPreviewCells(),
-    previewColor: 0x69c7ff,
-    selectedOwnCell: hoverOwn,
-    selectedTargetCell: hoverTarget,
-  });
+    previewColor:
+      movementPreviewValidity === null ? 0x85dcff : movementPreviewValidity ? 0x6dff9b : 0xff6d6d,
+  };
+  if (hoverOwn) {
+    sceneState.selectedOwnCell = hoverOwn;
+  }
+  if (hoverTarget) {
+    sceneState.selectedTargetCell = hoverTarget;
+  }
+  scene.renderState(sceneState);
 }
 
 function render(): void {
@@ -317,14 +429,20 @@ function render(): void {
   const enemy = game.players[activeViewer === 0 ? 1 : 0];
   const phasePlayer = currentPlayerForPhase();
 
-  const placementMode = game.phase === 'placement_p1' || game.phase === 'placement_p2';
-  const firingMode = game.phase === 'firing_p1' || game.phase === 'firing_p2';
-  const moveMode = game.phase === 'movement_p1' || game.phase === 'movement_p2';
+  const state = game; // non-null in render()
+  const placementMode = state.phase === 'placement_p1' || state.phase === 'placement_p2';
+  const firingMode = state.phase === 'firing_p1' || state.phase === 'firing_p2';
+  const moveMode = state.phase === 'movement_p1' || state.phase === 'movement_p2';
+  const turnIndicator = turnIndicatorText();
+  if (firingMode && (!selectedFiringShipUid || !canShipFire(state, activeViewer, selectedFiringShipUid))) {
+    selectedFiringShipUid = pickDefaultFiringShip(activeViewer);
+  }
 
   leftPanel.innerHTML = `
     <div class="section">
       <h1>Moving Battleships</h1>
       <p class="stat">Round ${game.round} • Phase: ${game.phase.replace('_', ' ')}</p>
+      <p class="turn-indicator">${turnIndicator}</p>
       <p class="stat">Perspective: ${me.name}</p>
     </div>
 
@@ -343,15 +461,25 @@ function render(): void {
   rightPanel.innerHTML = `
     <div class="section">
       <h2>Destroyed Ships</h2>
-      <p class="stat">P1 sank: ${game.players[0].destroyedEnemyTypes.length ? game.players[0].destroyedEnemyTypes.join(', ') : 'none'}</p>
-      <p class="stat">P2 sank: ${game.players[1].destroyedEnemyTypes.length ? game.players[1].destroyedEnemyTypes.join(', ') : 'none'}</p>
+      <p class="stat">${game.mode === '1p' ? 'You' : me.name} sank: ${
+        me.destroyedEnemyShipUids.length
+          ? me.destroyedEnemyShipUids.map((uid) => shipNameFromUid(uid)).join(', ')
+          : 'none'
+      }</p>
+      <p class="stat">${game.mode === '1p' ? 'Computer' : enemy.name} sank: ${
+        enemy.destroyedEnemyShipUids.length
+          ? enemy.destroyedEnemyShipUids.map((uid) => shipNameFromUid(uid)).join(', ')
+          : 'none'
+      }</p>
     </div>
     <div class="section">
       <h2>Fleet Status (${me.name})</h2>
       ${me.ships
         .map((s) => {
           const t = SHIP_BY_ID[s.typeId];
-          return `<div class="list-item ${s.sunk ? 'dead' : ''}">
+          const firedClass =
+            firingMode && s.placed && !s.sunk ? (canShipFire(state, activeViewer, s.uid) ? 'ready-to-fire' : 'spent-ship') : '';
+          return `<div class="list-item ${s.sunk ? 'dead' : ''} ${firedClass}">
             <span class="ship-icon" style="background:#9daebc"></span>${t.name} (size ${t.size})<br/>
             <span class="stat">HP ${s.hp}/${t.maxHp} • move ${t.move} • guns ${t.guns.map((g) => `${g.count}x${g.type}`).join(' + ')}</span>
           </div>`;
@@ -395,13 +523,41 @@ function render(): void {
   } else if (firingMode) {
     const acting = phasePlayer!;
     const canAct = acting === activeViewer;
+    const state = game;
+    const unfiredShips = me.ships.filter((s) => canShipFire(state, activeViewer, s.uid));
+    const firedCount = me.ships.filter((s) => !s.sunk && s.placed).length - unfiredShips.length;
+    const selectedShip =
+      selectedFiringShipUid ? me.ships.find((s) => s.uid === selectedFiringShipUid && s.placed && !s.sunk) : undefined;
+    const selectedShipCard = selectedShip
+      ? (() => {
+          const t = SHIP_BY_ID[selectedShip.typeId];
+          const gunList = t.guns.map((g) => `${g.count}x ${g.type}`).join(', ');
+          const firedLabel = canShipFire(state, activeViewer, selectedShip.uid) ? 'No' : 'Yes';
+          const shipName = game.mode === '1p' ? `Your ${t.name}` : t.name;
+          return `
+            <div class="selected-ship-card">
+              <p class="stat selected-ship-title">Selected Ship</p>
+              <p><strong>${shipName}</strong></p>
+              <p class="stat">Size: ${t.size} • HP: ${selectedShip.hp}/${t.maxHp} • Move: ${t.move}</p>
+              <p class="stat">Guns: ${gunList}</p>
+              <p class="stat">Fired this round: ${firedLabel}</p>
+            </div>
+          `;
+        })()
+      : '';
     actionSection.innerHTML = `
-      <h2>Firing Step</h2>
-      <p class="stat">Choose one of your surviving ships, then click a target cell on right grid.</p>
+      <h2>Firing Round</h2>
+      <p class="stat">Pick a surviving ship that has not fired this round, then click a target cell on the right grid.</p>
+      <p class="stat">Your ships fired this round: ${firedCount}/${me.ships.filter((s) => !s.sunk && s.placed).length}</p>
       ${me.ships
-        .filter((s) => !s.sunk)
-        .map((s) => `<button data-fire="${s.uid}" class="${selectedFiringShipUid === s.uid ? 'selected' : ''}" ${canAct ? '' : 'disabled'}>${SHIP_BY_ID[s.typeId].name}</button>`)
+        .filter((s) => !s.sunk && s.placed)
+        .map((s) => {
+          const ready = canShipFire(state, activeViewer, s.uid);
+          const stateClass = ready ? 'ready-to-fire' : 'spent-ship';
+          return `<button data-fire="${s.uid}" class="${selectedFiringShipUid === s.uid ? 'selected' : ''} ${stateClass}" ${canAct && ready ? '' : 'disabled'}>${SHIP_BY_ID[s.typeId].name}${ready ? '' : ' (fired)'}</button>`;
+        })
         .join('')}
+      ${selectedShipCard}
       <p class="stat">Selected target: ${selectedTargetCell ? `${selectedTargetCell.x},${selectedTargetCell.y}` : 'none'}</p>
     `;
     actionSection.querySelectorAll('button[data-fire]').forEach((btn) => {
@@ -413,11 +569,16 @@ function render(): void {
   } else if (moveMode) {
     const canAct = phasePlayer === activeViewer;
     const map = plannedMoves[activeViewer];
+    const selectedShip = selectedMoveShipUid ? me.ships.find((s) => s.uid === selectedMoveShipUid && !s.sunk && s.placed) : undefined;
+    const maxMove = selectedShip ? SHIP_BY_ID[selectedShip.typeId].move : undefined;
+    const previewDistance = selectedShip && hoverOwn ? Math.abs(selectedShip.anchor.x - hoverOwn.x) + Math.abs(selectedShip.anchor.y - hoverOwn.y) : undefined;
+    const previewLegal = getMovementPreviewValidity();
     actionSection.innerHTML = `
       <h2>Movement Planning</h2>
-      <p class="stat">Select ship, click destination on left grid, optional rotate. Use Skip when needed.</p>
+      <p class="stat">Select ship, click destination on left grid, optional rotate. Green preview is legal, red is illegal.</p>
+      <p class="stat">Max move: ${maxMove ?? '-'}${previewDistance !== undefined ? ` • Preview distance: ${previewDistance}${previewLegal === null ? '' : previewLegal ? ' (legal)' : ' (illegal)'}` : ''}</p>
       ${me.ships
-        .filter((s) => !s.sunk)
+        .filter((s) => !s.sunk && s.placed)
         .map((s) => {
           const o = map.get(s.uid);
           const summary = o ? (o.skip ? 'skip' : `to ${o.to.x},${o.to.y} ${o.orientation}`) : 'pending';
@@ -444,7 +605,11 @@ function render(): void {
       if (!selectedMoveShipUid) {
         return;
       }
-      const ship = me.ships.find((s) => s.uid === selectedMoveShipUid)!;
+      const ship = me.ships.find((s) => s.uid === selectedMoveShipUid && !s.sunk && s.placed);
+      if (!ship) {
+        setNotice('Cannot skip a sunk ship.', 'error');
+        return;
+      }
       plannedMoves[activeViewer].set(selectedMoveShipUid, {
         shipUid: selectedMoveShipUid,
         to: ship.anchor,
@@ -478,6 +643,10 @@ async function doHumanFire(playerId: PlayerId, shipUid: string, target: Coord): 
   if (!game) {
     return;
   }
+  if (!canShipFire(game, playerId, shipUid)) {
+    setNotice('That ship already fired this round.', 'error');
+    return;
+  }
   const result = resolveShot(game, playerId, shipUid, target);
   if (!result) {
     setNotice('Invalid shot.', 'error');
@@ -486,11 +655,45 @@ async function doHumanFire(playerId: PlayerId, shipUid: string, target: Coord): 
 
   const ship = game.players[playerId].ships.find((s) => s.uid === shipUid);
   const gunCount = SHIP_BY_ID[ship!.typeId].guns.reduce((acc, g) => acc + g.count, 0);
-  scene.animateShot(ship, target, gunCount, result.hit, () => {
-    if (result.sunkShipUid) {
-      scene.sinkShip(result.sunkShipUid);
+  const defenderId: PlayerId = playerId === 0 ? 1 : 0;
+  const targetBoard = defenderId === activeViewer ? 'own' : 'target';
+  const incomingFromSky = defenderId === activeViewer && playerId !== activeViewer;
+  const attacker = game.players[playerId];
+  const defender = game.players[defenderId];
+  const applyMarkerOnce = (pid: PlayerId, marker: { board: 'own' | 'target'; shipUid: string; target: Coord }) => {
+    const arr = game!.players[pid].ephemeralImpactMarkers;
+    if (!arr.some((m) => m.board === marker.board && m.shipUid === marker.shipUid && m.target.x === marker.target.x && m.target.y === marker.target.y)) {
+      arr.push(marker);
     }
-  });
+  };
+
+  scene.animateShot(
+    incomingFromSky ? undefined : ship,
+    target,
+    gunCount,
+    result.hit,
+    () => {
+      // Apply visual markers only when the shells land.
+      if (!game) {
+        return;
+      }
+      if (result.hit && result.hitShipUid) {
+        attacker.ephemeralHits.add(`${target.x},${target.y}`);
+        applyMarkerOnce(playerId, { board: 'target', shipUid: result.hitShipUid, target: { ...target } });
+        applyMarkerOnce(defenderId, { board: 'own', shipUid: result.hitShipUid, target: { ...target } });
+      } else {
+        attacker.misses.add(`${target.x},${target.y}`);
+      }
+
+      if (result.sunkShipUid) {
+        scene.sinkShip(result.sunkShipUid);
+      }
+
+      // Re-render to show markers immediately after impact (during the animation window).
+      renderSceneOnly();
+    },
+    { targetBoard, incomingFromSky, salvoDelayMs: 80 }
+  );
 
   setNotice(result.hit ? `Hit for ${result.damage} damage.` : 'Miss.', result.hit ? 'ok' : '');
   await wait(650);
@@ -503,20 +706,27 @@ async function doHumanFire(playerId: PlayerId, shipUid: string, target: Coord): 
     return;
   }
 
-  if (playerId === 0) {
-    game.phase = 'firing_p2';
-    selectedFiringShipUid = game.players[1].ships.find((s) => !s.sunk)!.uid;
-    if (game.mode === '2p') {
-      requestPass(1, 'Player 1 firing complete', () => render());
-    }
-  } else {
+  const nextShooter = nextFiringPlayer(game, playerId);
+  if (nextShooter === null || (!hasUnfiredShips(game, 0) && !hasUnfiredShips(game, 1))) {
     game.phase = 'movement_p1';
-    selectedMoveShipUid = game.players[0].ships.find((s) => !s.sunk)!.uid;
+    selectedMoveShipUid = game.players[0].ships.find((s) => !s.sunk && s.placed)?.uid ?? null;
     plannedMoves[0].clear();
     plannedMoves[1].clear();
+    selectedFiringShipUid = null;
     if (game.mode === '2p') {
-      requestPass(0, 'Firing phase complete', () => render());
+      requestPass(0, 'Firing round complete', () => render());
+    } else {
+      render();
     }
+    return;
+  }
+
+  game.phase = nextShooter === 0 ? 'firing_p1' : 'firing_p2';
+  selectedFiringShipUid = pickDefaultFiringShip(nextShooter);
+  if (game.mode === '2p' && nextShooter !== playerId) {
+    requestPass(nextShooter, `${game.players[playerId].name} fired`, () => render());
+  } else {
+    render();
   }
 }
 
@@ -537,7 +747,7 @@ async function maybeFinalizeMovementPhase(): Promise<void> {
 
   if (pid === 0) {
     game.phase = 'movement_p2';
-    selectedMoveShipUid = game.players[1].ships.find((s) => !s.sunk)!.uid;
+    selectedMoveShipUid = game.players[1].ships.find((s) => !s.sunk && s.placed)?.uid ?? null;
     if (game.mode === '2p') {
       requestPass(1, 'Player 1 movement planned', () => render());
     }
@@ -578,9 +788,13 @@ async function resolveMovementPhase(): Promise<void> {
   }
 
   clearEphemeral(game);
+  // Clear targeting misses at the start of each new round (per latest rule tweak)
+  game.players[0].misses.clear();
+  game.players[1].misses.clear();
   game.round += 1;
+  resetFiringRound(game);
   game.phase = 'firing_p1';
-  selectedFiringShipUid = game.players[0].ships.find((s) => !s.sunk)?.uid ?? null;
+  selectedFiringShipUid = pickDefaultFiringShip(0);
   selectedMoveShipUid = null;
   plannedMoves[0].clear();
   plannedMoves[1].clear();
@@ -604,7 +818,9 @@ async function maybeRunAI(): Promise<void> {
     aiBusy = true;
     await wait(500);
     const shot = randomLegalShot(game, 1, rng);
-    await doHumanFire(1, shot.shipUid, shot.target);
+    if (shot) {
+      await doHumanFire(1, shot.shipUid, shot.target);
+    }
     aiBusy = false;
     return;
   }

@@ -3,7 +3,7 @@
 Web-based 3D Battleships-with-movement game with:
 - 1 Player vs easy AI (deterministic RNG seed)
 - 2 Player hotseat with pass-device overlay
-- Placement, firing, simultaneous movement, ephemeral hit visibility, and ship HP pools
+- Placement, per-round alternating firing by ship, simultaneous movement, ephemeral hit visibility, and ship HP pools
 - Basic animations: muzzle flash, projectile arc, impact burst, sinking fade/tilt
 
 ## Stack
@@ -33,7 +33,7 @@ npm run test
 ## Controls
 - `R` key or Rotate button: rotate placement / movement orientation.
 - Placement phase: select ship in panel, hover left grid, click to place.
-- Firing phase: select alive ship in panel, click target on right grid.
+- Firing phase: players alternate selecting an unfired surviving ship and shooting until all surviving ships have fired once.
 - Movement phase: select alive ship, click destination on left grid (or skip).
 
 ## Notes

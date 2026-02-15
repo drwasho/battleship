@@ -22,7 +22,9 @@ export function createPlayer(id: PlayerId, name: string, isAI: boolean): PlayerS
     ships: makeShips(id),
     misses: new Set<string>(),
     ephemeralHits: new Set<string>(),
+    ephemeralImpactMarkers: [],
     destroyedEnemyTypes: [],
+    destroyedEnemyShipUids: [],
   };
 }
 
@@ -34,6 +36,7 @@ export function createInitialState(mode: '1p' | '2p'): GameState {
     phase: 'placement_p1',
     round: 1,
     players: [p1, p2],
+    firedThisRound: [new Set<string>(), new Set<string>()],
     shotLog: [],
   };
 }

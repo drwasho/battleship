@@ -96,12 +96,24 @@ export function shipDamage(ship: ShipInstance): number {
   return total;
 }
 
+function addEphemeralImpactMarker(
+  player: PlayerState,
+  marker: { board: 'own' | 'target'; shipUid: string; target: Coord }
+): void {
+  const exists = player.ephemeralImpactMarkers.some(
+    (m) => m.board === marker.board && m.shipUid === marker.shipUid && m.target.x === marker.target.x && m.target.y === marker.target.y
+  );
+  if (!exists) {
+    player.ephemeralImpactMarkers.push(marker);
+  }
+}
+
 export function resolveShot(state: GameState, attackerId: PlayerId, shipUid: string, target: Coord): ShotResult | null {
   const defenderId = attackerId === 0 ? 1 : 0;
   const attacker = state.players[attackerId];
   const defender = state.players[defenderId];
   const ship = attacker.ships.find((s) => s.uid === shipUid && !s.sunk && s.placed);
-  if (!ship || !inBounds(target)) {
+  if (!ship || !inBounds(target) || state.firedThisRound[attackerId].has(shipUid)) {
     return null;
   }
 
@@ -117,19 +129,53 @@ export function resolveShot(state: GameState, attackerId: PlayerId, shipUid: str
   };
 
   if (hitShip) {
+    result.hitShipUid = hitShip.uid;
     hitShip.hp = Math.max(0, hitShip.hp - damage);
     if (hitShip.hp === 0) {
       hitShip.sunk = true;
       result.sunkShipUid = hitShip.uid;
       attacker.destroyedEnemyTypes.push(hitShip.typeId);
+      if (!attacker.destroyedEnemyShipUids.includes(hitShip.uid)) {
+        attacker.destroyedEnemyShipUids.push(hitShip.uid);
+      }
     }
-    attacker.ephemeralHits.add(key(target));
+    // Note: ephemeral visuals (hit markers / smoke) are applied by the UI layer on impact,
+    // so they appear only after shells land.
   } else {
-    attacker.misses.add(key(target));
+    // Note: miss markers are applied by the UI layer on impact (after the splash).
   }
 
   state.shotLog.push(result);
+  state.firedThisRound[attackerId].add(shipUid);
   return result;
+}
+
+export function resetFiringRound(state: GameState): void {
+  state.firedThisRound[0].clear();
+  state.firedThisRound[1].clear();
+}
+
+export function canShipFire(state: GameState, playerId: PlayerId, shipUid: string): boolean {
+  const ship = state.players[playerId].ships.find((s) => s.uid === shipUid);
+  if (!ship || ship.sunk || !ship.placed) {
+    return false;
+  }
+  return !state.firedThisRound[playerId].has(shipUid);
+}
+
+export function hasUnfiredShips(state: GameState, playerId: PlayerId): boolean {
+  return state.players[playerId].ships.some((s) => canShipFire(state, playerId, s.uid));
+}
+
+export function nextFiringPlayer(state: GameState, current: PlayerId): PlayerId | null {
+  const other = current === 0 ? 1 : 0;
+  if (hasUnfiredShips(state, other)) {
+    return other;
+  }
+  if (hasUnfiredShips(state, current)) {
+    return current;
+  }
+  return null;
 }
 
 function shipMoveRange(ship: ShipInstance): number {
@@ -145,13 +191,13 @@ function translateShip(ship: ShipInstance, to: Coord): ShipInstance {
 }
 
 export function canMoveShip(state: GameState, playerId: PlayerId, order: MoveOrder): boolean {
-  if (order.skip) {
-    return true;
-  }
   const player = state.players[playerId];
   const ship = player.ships.find((s) => s.uid === order.shipUid && s.placed && !s.sunk);
   if (!ship) {
     return false;
+  }
+  if (order.skip) {
+    return true;
   }
   if (manhattan(ship.anchor, order.to) > shipMoveRange(ship)) {
     return false;
@@ -256,6 +302,8 @@ export function resolveMovement(state: GameState, p1Orders: MoveOrder[], p2Order
 export function clearEphemeral(state: GameState): void {
   state.players[0].ephemeralHits.clear();
   state.players[1].ephemeralHits.clear();
+  state.players[0].ephemeralImpactMarkers.length = 0;
+  state.players[1].ephemeralImpactMarkers.length = 0;
 }
 
 export function hasWinner(state: GameState): PlayerId | undefined {
@@ -285,9 +333,12 @@ export function randomFleetPlacement(player: PlayerState, rng: SeededRng): void 
   }
 }
 
-export function randomLegalShot(state: GameState, attackerId: PlayerId, rng: SeededRng): { shipUid: string; target: Coord } {
+export function randomLegalShot(state: GameState, attackerId: PlayerId, rng: SeededRng): { shipUid: string; target: Coord } | null {
   const attacker = state.players[attackerId];
-  const liveShips = attacker.ships.filter((s) => !s.sunk && s.placed);
+  const liveShips = attacker.ships.filter((s) => canShipFire(state, attackerId, s.uid));
+  if (!liveShips.length) {
+    return null;
+  }
   const ship = rng.pick(liveShips);
   let target = { x: rng.int(BOARD_SIZE), y: rng.int(BOARD_SIZE) };
   let guard = 0;

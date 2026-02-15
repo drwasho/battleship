@@ -1,4 +1,4 @@
-import type { ShipTemplate } from './types';
+import type { ShipTemplate, ShipTypeId } from './types';
 
 export const BOARD_SIZE = 10;
 
@@ -16,9 +16,9 @@ export const SHIPS: ShipTemplate[] = [
   { id: 'dreadnought', name: 'Dreadnought', size: 5, maxHp: 18, move: 1, guns: [{ type: 'heavy', count: 1 }] },
 ];
 
-export const SHIP_BY_ID = Object.fromEntries(SHIPS.map((s) => [s.id, s])) as Record<string, ShipTemplate>;
+export const SHIP_BY_ID = Object.fromEntries(SHIPS.map((s) => [s.id, s])) as Record<ShipTypeId, ShipTemplate>;
 
-export const SHIP_COLORS: Record<string, number> = {
+export const SHIP_COLORS: Record<ShipTypeId, number> = {
   scout: 0x9cadb8,
   destroyer: 0x8f9daa,
   cruiser: 0x7b8d9f,

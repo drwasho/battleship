@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { SeededRng } from '../src/engine/rng';
 import {
+  canShipFire,
   canMoveShip,
+  hasUnfiredShips,
+  nextFiringPlayer,
   placeShip,
   randomFleetPlacement,
   resolveMovement,
   resolveShot,
+  resetFiringRound,
   shipAt,
 } from '../src/engine/rules';
 import { createInitialState } from '../src/engine/state';
@@ -50,10 +54,73 @@ describe('rules engine', () => {
     expect(first?.hit).toBe(true);
     expect(scout.hp).toBe(1);
 
+    resetFiringRound(state);
     const second = resolveShot(state, 0, cruiser.uid, { x: 2, y: 2 });
     expect(second?.sunkShipUid).toBe(scout.uid);
     expect(scout.sunk).toBe(true);
+    expect(p1.destroyedEnemyShipUids).toContain(scout.uid);
     expect(shipAt(p2, { x: 2, y: 2 })).toBeUndefined();
+  });
+
+  it('rejects movement for sunk ships including skip orders', () => {
+    const state = createInitialState('2p');
+    const p1 = state.players[0];
+    const p2 = state.players[1];
+    const cruiser = p1.ships.find((s) => s.typeId === 'cruiser')!;
+    const scout = p2.ships.find((s) => s.typeId === 'scout')!;
+
+    placeShip(p1, cruiser.uid, { x: 0, y: 0 }, 'H');
+    placeShip(p2, scout.uid, { x: 2, y: 2 }, 'H');
+    resolveShot(state, 0, cruiser.uid, { x: 2, y: 2 });
+    resetFiringRound(state);
+    resolveShot(state, 0, cruiser.uid, { x: 2, y: 2 });
+
+    expect(scout.sunk).toBe(true);
+    expect(canMoveShip(state, 1, { shipUid: scout.uid, to: { x: 2, y: 2 }, orientation: 'H', skip: true })).toBe(false);
+    expect(canMoveShip(state, 1, { shipUid: scout.uid, to: { x: 3, y: 2 }, orientation: 'H' })).toBe(false);
+  });
+
+  it('enforces one shot per ship per firing round', () => {
+    const state = createInitialState('2p');
+    const p1 = state.players[0];
+    const p2 = state.players[1];
+    const cruiser = p1.ships.find((s) => s.typeId === 'cruiser')!;
+    const scout = p2.ships.find((s) => s.typeId === 'scout')!;
+
+    placeShip(p1, cruiser.uid, { x: 0, y: 0 }, 'H');
+    placeShip(p2, scout.uid, { x: 2, y: 2 }, 'H');
+
+    expect(canShipFire(state, 0, cruiser.uid)).toBe(true);
+    expect(resolveShot(state, 0, cruiser.uid, { x: 2, y: 2 })?.hit).toBe(true);
+    expect(canShipFire(state, 0, cruiser.uid)).toBe(false);
+    expect(resolveShot(state, 0, cruiser.uid, { x: 2, y: 2 })).toBeNull();
+
+    resetFiringRound(state);
+    expect(canShipFire(state, 0, cruiser.uid)).toBe(true);
+    expect(resolveShot(state, 0, cruiser.uid, { x: 2, y: 2 })).not.toBeNull();
+  });
+
+  it('chooses next firing player based on remaining unfired ships', () => {
+    const state = createInitialState('2p');
+    const p1 = state.players[0];
+    const p2 = state.players[1];
+    const p1Scout = p1.ships.find((s) => s.typeId === 'scout')!;
+    const p2Scout = p2.ships.find((s) => s.typeId === 'scout')!;
+
+    placeShip(p1, p1Scout.uid, { x: 0, y: 0 }, 'H');
+    placeShip(p2, p2Scout.uid, { x: 4, y: 0 }, 'H');
+
+    expect(hasUnfiredShips(state, 0)).toBe(true);
+    expect(hasUnfiredShips(state, 1)).toBe(true);
+    expect(nextFiringPlayer(state, 0)).toBe(1);
+
+    resolveShot(state, 1, p2Scout.uid, { x: 0, y: 0 });
+    expect(nextFiringPlayer(state, 0)).toBe(0);
+
+    resolveShot(state, 0, p1Scout.uid, { x: 4, y: 0 });
+    expect(hasUnfiredShips(state, 0)).toBe(false);
+    expect(hasUnfiredShips(state, 1)).toBe(false);
+    expect(nextFiringPlayer(state, 0)).toBeNull();
   });
 
   it('resolves simultaneous movement and rejects overlap', () => {

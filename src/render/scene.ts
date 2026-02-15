@@ -1,13 +1,21 @@
 import * as THREE from 'three';
-import { BOARD_SIZE, SHIP_COLORS } from '../engine/data';
+import { BOARD_SIZE, SHIP_BY_ID, SHIP_COLORS } from '../engine/data';
 import { shipCells } from '../engine/rules';
-import type { Coord, ShipInstance } from '../engine/types';
+import type { Coord, EphemeralImpactMarker, ShipInstance } from '../engine/types';
 
 type BoardKind = 'own' | 'target';
 
 interface MeshShip {
   group: THREE.Group;
+  hullMaterials: THREE.MeshStandardMaterial[];
+  hpFill: THREE.Mesh;
+  hpLabel: THREE.Sprite;
+  hpLabelCanvas: HTMLCanvasElement;
+  hpLabelCtx: CanvasRenderingContext2D;
+  hpLabelTex: THREE.CanvasTexture;
   baseY: number;
+  targetPos: THREE.Vector3;
+  targetRotY: number;
   sunkAnim?: { t: number; startY: number };
 }
 
@@ -18,7 +26,7 @@ interface ProjectileAnim {
   end: THREE.Vector3;
   t: number;
   duration: number;
-  onDone?: () => void;
+  onDone: (() => void) | undefined;
 }
 
 interface FlashAnim {
@@ -33,11 +41,33 @@ interface ImpactAnim {
   duration: number;
 }
 
+interface SmokePuff {
+  mesh: THREE.Mesh;
+  phase: number;
+  driftX: number;
+  driftZ: number;
+}
+
+interface ImpactSmokeMarker {
+  group: THREE.Group;
+  puffs: SmokePuff[];
+  startedAtMs: number;
+}
+
+interface ShotAnimOptions {
+  targetBoard?: BoardKind;
+  incomingFromSky?: boolean;
+  salvoDelayMs?: number;
+}
+
 export interface SceneState {
   ownShips: ShipInstance[];
   ownShipHpPercent: Map<string, number>;
   targetMisses: Set<string>;
   targetEphemeralHits: Set<string>;
+  ephemeralImpactMarkers: EphemeralImpactMarker[];
+  firingReadyShipUids?: Set<string>;
+  firingSpentShipUids?: Set<string>;
   previewCells: Coord[];
   previewColor: number;
   selectedOwnCell?: Coord;
@@ -59,15 +89,18 @@ export class BattleScene {
   private previewGroup = new THREE.Group();
   private selectionGroup = new THREE.Group();
   private shipLayer = new THREE.Group();
+  private impactSmokeLayer = new THREE.Group();
   private ships = new Map<string, MeshShip>();
+  private impactSmokes = new Map<string, ImpactSmokeMarker>();
   private projectileAnims: ProjectileAnim[] = [];
   private flashAnims: FlashAnim[] = [];
   private impactAnims: ImpactAnim[] = [];
+  private shotTimers: number[] = [];
   private lastTime = performance.now();
 
   constructor(private host: HTMLElement) {
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x07111b);
+    this.scene.background = new THREE.Color(0x3b6f93);
 
     this.camera = new THREE.PerspectiveCamera(52, host.clientWidth / host.clientHeight, 0.1, 1000);
     this.camera.position.set(0, 14, 20);
@@ -78,16 +111,19 @@ export class BattleScene {
     this.renderer.setSize(host.clientWidth, host.clientHeight);
     this.host.appendChild(this.renderer.domElement);
 
-    const hemi = new THREE.HemisphereLight(0xa8ccf2, 0x0f1722, 1.2);
+    const hemi = new THREE.HemisphereLight(0xd7ecff, 0x4d738f, 1.65);
     this.scene.add(hemi);
 
-    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.2);
     dir.position.set(12, 20, 6);
     this.scene.add(dir);
+    const rim = new THREE.DirectionalLight(0xc7ebff, 0.8);
+    rim.position.set(-10, 12, -14);
+    this.scene.add(rim);
 
     const water = new THREE.Mesh(
       new THREE.PlaneGeometry(50, 40),
-      new THREE.MeshStandardMaterial({ color: 0x0b1f33, roughness: 0.75, metalness: 0.1 })
+      new THREE.MeshStandardMaterial({ color: 0x2f678d, roughness: 0.42, metalness: 0.2, emissive: 0x12334d, emissiveIntensity: 0.35 })
     );
     water.rotation.x = -Math.PI / 2;
     water.position.y = -0.4;
@@ -96,6 +132,7 @@ export class BattleScene {
     this.scene.add(this.ownBoard);
     this.scene.add(this.targetBoard);
     this.scene.add(this.shipLayer);
+    this.scene.add(this.impactSmokeLayer);
     this.scene.add(this.markerGroup);
     this.scene.add(this.previewGroup);
     this.scene.add(this.selectionGroup);
@@ -109,6 +146,10 @@ export class BattleScene {
 
   dispose(): void {
     window.removeEventListener('resize', this.onResize);
+    for (const id of this.shotTimers) {
+      window.clearTimeout(id);
+    }
+    this.shotTimers = [];
     this.renderer.dispose();
   }
 
@@ -135,40 +176,54 @@ export class BattleScene {
     return new THREE.Vector3(base.x - 4.5 + cell.x, 0.15, base.z - 4.5 + cell.y);
   }
 
-  animateShot(fromOwnShip: ShipInstance | undefined, target: Coord, gunCount: number, hit: boolean, onImpact?: () => void): void {
-    const muzzle = fromOwnShip
-      ? this.worldForCell('own', shipCells(fromOwnShip)[Math.floor(shipCells(fromOwnShip).length / 2)]!)
-      : new THREE.Vector3(this.ownOffset.x, 0.4, this.ownOffset.z);
-    muzzle.y = 0.55;
-    const end = this.worldForCell('target', target);
+  animateShot(
+    fromOwnShip: ShipInstance | undefined,
+    target: Coord,
+    gunCount: number,
+    hit: boolean,
+    onImpact?: () => void,
+    options: ShotAnimOptions = {}
+  ): void {
+    const targetBoard = options.targetBoard ?? 'target';
+    const incomingFromSky = options.incomingFromSky ?? false;
+    const salvoDelayMs = options.salvoDelayMs ?? 80;
+    const muzzlePoints = this.computeMuzzles(fromOwnShip, gunCount, incomingFromSky, targetBoard, target);
+    const end = this.worldForCell(targetBoard, target);
     end.y = 0.28;
-    const control = muzzle.clone().lerp(end, 0.5);
-    control.y += 3.8;
 
-    const flash = new THREE.Mesh(
-      new THREE.SphereGeometry(0.22, 10, 10),
-      new THREE.MeshBasicMaterial({ color: 0xffdca5, transparent: true, opacity: 0.9 })
-    );
-    flash.position.copy(muzzle);
-    this.scene.add(flash);
-    this.flashAnims.push({ mesh: flash, t: 0, duration: 0.18 });
+    for (let i = 0; i < muzzlePoints.length; i += 1) {
+      const muzzle = muzzlePoints[i]!;
+      const timerId = window.setTimeout(() => {
+        this.shotTimers = this.shotTimers.filter((id) => id !== timerId);
+        if (!incomingFromSky) {
+          const flash = new THREE.Mesh(
+            new THREE.SphereGeometry(0.22, 10, 10),
+            new THREE.MeshBasicMaterial({ color: 0xffdca5, transparent: true, opacity: 0.9 })
+          );
+          flash.position.copy(muzzle);
+          this.scene.add(flash);
+          this.flashAnims.push({ mesh: flash, t: 0, duration: 0.18 });
+        }
 
-    for (let i = 0; i < gunCount; i += 1) {
-      const proj = new THREE.Mesh(
-        new THREE.SphereGeometry(0.08, 8, 8),
-        new THREE.MeshBasicMaterial({ color: 0xffc36a })
-      );
-      proj.position.copy(muzzle);
-      this.scene.add(proj);
-      this.projectileAnims.push({
-        mesh: proj,
-        start: muzzle.clone(),
-        control: control.clone().add(new THREE.Vector3((i - gunCount / 2) * 0.15, 0, 0)),
-        end: end.clone(),
-        t: 0,
-        duration: 0.55 + i * 0.03,
-        onDone: i === gunCount - 1 ? () => this.spawnImpact(end, hit, onImpact) : undefined,
-      });
+        const control = muzzle.clone().lerp(end, 0.5);
+        control.y += incomingFromSky ? 1.4 : 3.8;
+        const proj = new THREE.Mesh(
+          new THREE.SphereGeometry(0.08, 8, 8),
+          new THREE.MeshBasicMaterial({ color: 0xffc36a })
+        );
+        proj.position.copy(muzzle);
+        this.scene.add(proj);
+        this.projectileAnims.push({
+          mesh: proj,
+          start: muzzle.clone(),
+          control,
+          end: end.clone(),
+          t: 0,
+          duration: incomingFromSky ? 0.42 + i * 0.025 : 0.55 + i * 0.03,
+          onDone: i === muzzlePoints.length - 1 ? () => this.spawnImpact(end, hit, onImpact) : undefined,
+        });
+      }, i * salvoDelayMs);
+      this.shotTimers.push(timerId);
     }
   }
 
@@ -180,7 +235,8 @@ export class BattleScene {
   }
 
   renderState(state: SceneState): void {
-    this.rebuildShips(state.ownShips, state.ownShipHpPercent);
+    this.rebuildShips(state.ownShips, state.ownShipHpPercent, state.firingReadyShipUids, state.firingSpentShipUids);
+    this.rebuildImpactSmokes(state.ephemeralImpactMarkers, state.ownShips);
     this.rebuildMarkers(state.targetMisses, state.targetEphemeralHits);
     this.rebuildPreview(state.previewCells, state.previewColor, state.selectedOwnCell, state.selectedTargetCell);
   }
@@ -194,17 +250,17 @@ export class BattleScene {
   private buildBoard(group: THREE.Group, board: BoardKind, offset: THREE.Vector3): void {
     const frame = new THREE.Mesh(
       new THREE.BoxGeometry(11.2, 0.22, 11.2),
-      new THREE.MeshStandardMaterial({ color: 0x173149, roughness: 0.65, metalness: 0.35 })
+      new THREE.MeshStandardMaterial({ color: 0x7fb4d8, roughness: 0.4, metalness: 0.35, emissive: 0x264d66, emissiveIntensity: 0.25 })
     );
     frame.position.copy(offset.clone().setY(-0.02));
     group.add(frame);
 
     for (let y = 0; y < BOARD_SIZE; y += 1) {
       for (let x = 0; x < BOARD_SIZE; x += 1) {
-        const shade = (x + y) % 2 === 0 ? 0x24435d : 0x1f3951;
+        const shade = (x + y) % 2 === 0 ? 0x8ec4e8 : 0x79afd5;
         const tile = new THREE.Mesh(
           new THREE.BoxGeometry(0.95, 0.06, 0.95),
-          new THREE.MeshStandardMaterial({ color: shade, roughness: 0.75, metalness: 0.2 })
+          new THREE.MeshStandardMaterial({ color: shade, roughness: 0.35, metalness: 0.2, emissive: 0x1d4d69, emissiveIntensity: 0.16 })
         );
         tile.position.set(offset.x - 4.5 + x, 0.02, offset.z - 4.5 + y);
         tile.userData.board = board;
@@ -214,9 +270,30 @@ export class BattleScene {
         this.boardTiles.push(tile);
       }
     }
+
+    const points: THREE.Vector3[] = [];
+    const gridY = 0.1;
+    const startX = offset.x - 5;
+    const startZ = offset.z - 5;
+    for (let i = 0; i <= BOARD_SIZE; i += 1) {
+      const x = startX + i;
+      const z = startZ + i;
+      points.push(new THREE.Vector3(x, gridY, startZ), new THREE.Vector3(x, gridY, startZ + BOARD_SIZE));
+      points.push(new THREE.Vector3(startX, gridY, z), new THREE.Vector3(startX + BOARD_SIZE, gridY, z));
+    }
+    const grid = new THREE.LineSegments(
+      new THREE.BufferGeometry().setFromPoints(points),
+      new THREE.LineBasicMaterial({ color: 0xe9f7ff, transparent: true, opacity: 0.95 })
+    );
+    group.add(grid);
   }
 
-  private rebuildShips(ships: ShipInstance[], hp: Map<string, number>): void {
+  private rebuildShips(
+    ships: ShipInstance[],
+    hp: Map<string, number>,
+    readyShipUids: Set<string> | undefined,
+    spentShipUids: Set<string> | undefined
+  ): void {
     const keep = new Set<string>();
     for (const ship of ships) {
       if (!ship.placed) {
@@ -226,33 +303,62 @@ export class BattleScene {
       let ms = this.ships.get(ship.uid);
       if (!ms) {
         const g = new THREE.Group();
-        const hull = new THREE.Mesh(
-          new THREE.BoxGeometry(shipCells(ship).length * 0.9, 0.35, 0.7),
-          new THREE.MeshStandardMaterial({
-            color: SHIP_COLORS[ship.typeId],
-            roughness: 0.5,
-            metalness: 0.55,
-            transparent: true,
-            opacity: 1,
-          })
-        );
-        g.add(hull);
+        const hull = this.buildShipHull(shipCells(ship).length * 0.9, ship.typeId);
+        g.add(hull.group);
+        const hpUi = this.buildShipHpUi();
+        g.add(hpUi.container);
         this.shipLayer.add(g);
-        ms = { group: g, baseY: 0.24 };
+        ms = {
+          group: g,
+          hullMaterials: hull.materials,
+          hpFill: hpUi.fill,
+          hpLabel: hpUi.label,
+          hpLabelCanvas: hpUi.canvas,
+          hpLabelCtx: hpUi.ctx,
+          hpLabelTex: hpUi.texture,
+          baseY: 0.24,
+          targetPos: g.position.clone(),
+          targetRotY: g.rotation.y,
+        };
         this.ships.set(ship.uid, ms);
       }
 
       const perc = hp.get(ship.uid) ?? 1;
-      const mat = (ms.group.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
-      mat.opacity = Math.max(0.25, perc);
+      const damageN = 1 - Math.max(0, Math.min(1, perc));
+      const baseColor = new THREE.Color(SHIP_COLORS[ship.typeId]);
+      const damagedColor = baseColor.clone().lerp(new THREE.Color(0x6d4f49), damageN * 0.55);
+      for (const mat of ms.hullMaterials) {
+        mat.color.copy(damagedColor);
+        mat.emissive.setHex(SHIP_COLORS[ship.typeId]);
+        mat.emissive.lerp(new THREE.Color(0x241615), damageN * 0.7);
+        mat.opacity = 0.96;
+        mat.emissiveIntensity = 0.16 + (readyShipUids?.has(ship.uid) ? 0.13 : 0);
+        if (spentShipUids?.has(ship.uid)) {
+          mat.color.lerp(new THREE.Color(0x68737e), 0.4);
+          mat.emissiveIntensity = 0.05;
+          mat.opacity = 0.78;
+        }
+      }
 
-      const width = shipCells(ship).length * 0.9;
-      (ms.group.children[0] as THREE.Mesh).geometry.dispose();
-      (ms.group.children[0] as THREE.Mesh).geometry = new THREE.BoxGeometry(width, 0.35, 0.7);
+      ms.hpFill.scale.x = Math.max(0.02, Math.min(1, perc));
+      ms.hpFill.position.x = -0.31 + ms.hpFill.scale.x * 0.31;
+      (ms.hpFill.material as THREE.MeshBasicMaterial).color.set(perc > 0.6 ? 0x78ed9d : perc > 0.3 ? 0xffcd62 : 0xff6f62);
+      this.drawHpLabel(ms, ship.hp, SHIP_BY_ID[ship.typeId].maxHp);
+      ms.hpLabel.position.set(0, 1.18, 0);
 
       const pos = this.worldForCell('own', ship.anchor);
-      ms.group.position.set(pos.x + (ship.orientation === 'H' ? (shipCells(ship).length - 1) * 0.45 : 0), ms.baseY, pos.z + (ship.orientation === 'V' ? (shipCells(ship).length - 1) * 0.45 : 0));
-      ms.group.rotation.y = ship.orientation === 'H' ? 0 : Math.PI / 2;
+      const desiredX = pos.x + (ship.orientation === 'H' ? (shipCells(ship).length - 1) * 0.45 : 0);
+      const desiredZ = pos.z + (ship.orientation === 'V' ? (shipCells(ship).length - 1) * 0.45 : 0);
+      const desiredRotY = ship.orientation === 'H' ? 0 : Math.PI / 2;
+
+      ms.targetPos.set(desiredX, ms.baseY, desiredZ);
+      ms.targetRotY = desiredRotY;
+
+      // Snap new ships into place; existing ships will smoothly interpolate in tick().
+      if (ms.group.position.lengthSq() < 0.0001) {
+        ms.group.position.copy(ms.targetPos);
+        ms.group.rotation.y = ms.targetRotY;
+      }
     }
 
     for (const [uid, ms] of this.ships) {
@@ -263,14 +369,133 @@ export class BattleScene {
     }
   }
 
+  private buildShipHull(length: number, typeId: ShipInstance['typeId']): { group: THREE.Group; materials: THREE.MeshStandardMaterial[] } {
+    const hullGroup = new THREE.Group();
+    const base = SHIP_COLORS[typeId];
+    const hullMat = new THREE.MeshStandardMaterial({
+      color: base,
+      roughness: 0.36,
+      metalness: 0.58,
+      emissive: base,
+      emissiveIntensity: 0.16,
+      transparent: true,
+      opacity: 0.96,
+    });
+    const towerMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(base).lerp(new THREE.Color(0xb4c0c9), 0.22),
+      roughness: 0.34,
+      metalness: 0.62,
+      emissive: base,
+      emissiveIntensity: 0.12,
+      transparent: true,
+      opacity: 0.96,
+    });
+
+    const sternLen = Math.max(0.2, length * 0.22);
+    const midLen = Math.max(0.22, length * 0.42);
+    const bowLen = Math.max(0.2, length - sternLen - midLen);
+    const sternX = -length * 0.5 + sternLen * 0.5;
+    const midX = -length * 0.5 + sternLen + midLen * 0.5;
+    const bowBaseX = -length * 0.5 + sternLen + midLen;
+
+    const stern = new THREE.Mesh(new THREE.BoxGeometry(sternLen, 0.28, 0.7), hullMat);
+    stern.position.set(sternX, 0, 0);
+    hullGroup.add(stern);
+
+    const mid = new THREE.Mesh(new THREE.BoxGeometry(midLen, 0.34, 0.82), hullMat);
+    mid.position.set(midX, 0.02, 0);
+    hullGroup.add(mid);
+
+    const bowA = new THREE.Mesh(new THREE.BoxGeometry(bowLen * 0.5, 0.3, 0.66), hullMat);
+    bowA.position.set(bowBaseX + bowLen * 0.25, 0.01, 0);
+    hullGroup.add(bowA);
+    const bowB = new THREE.Mesh(new THREE.BoxGeometry(bowLen * 0.3, 0.26, 0.5), hullMat);
+    bowB.position.set(bowBaseX + bowLen * 0.65, 0.02, 0);
+    hullGroup.add(bowB);
+    const bowC = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.1, bowLen * 0.2), 0.2, 0.34), hullMat);
+    bowC.position.set(bowBaseX + bowLen * 0.9, 0.03, 0);
+    hullGroup.add(bowC);
+
+    const superLen = Math.max(0.22, Math.min(0.55, length * 0.26));
+    const superStruct = new THREE.Mesh(new THREE.BoxGeometry(superLen, 0.18, 0.34), towerMat);
+    superStruct.position.set(-length * 0.12, 0.28, 0);
+    hullGroup.add(superStruct);
+
+    return { group: hullGroup, materials: [hullMat, towerMat] };
+  }
+
+  private buildShipHpUi(): {
+    container: THREE.Group;
+    fill: THREE.Mesh;
+    label: THREE.Sprite;
+    canvas: HTMLCanvasElement;
+    ctx: CanvasRenderingContext2D;
+    texture: THREE.CanvasTexture;
+  } {
+    const container = new THREE.Group();
+    container.position.set(0, 0.82, 0);
+
+    const bg = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.64, 0.08),
+      new THREE.MeshBasicMaterial({ color: 0x1e2d37, transparent: true, opacity: 0.9, depthTest: false })
+    );
+    container.add(bg);
+
+    const fill = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.62, 0.05),
+      new THREE.MeshBasicMaterial({ color: 0x78ed9d, depthTest: false })
+    );
+    fill.position.z = 0.001;
+    fill.position.x = 0;
+    container.add(fill);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 44;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Failed to create HP label context');
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    const label = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        depthTest: false,
+      })
+    );
+    label.scale.set(0.95, 0.3, 1);
+    container.add(label);
+    return { container, fill, label, canvas, ctx, texture };
+  }
+
+  private drawHpLabel(ship: MeshShip, hp: number, maxHp: number): void {
+    const { hpLabelCtx: ctx, hpLabelCanvas: canvas, hpLabelTex: tex } = ship;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = 'rgba(16, 30, 42, 0.86)';
+    ctx.fillRect(6, 4, canvas.width - 12, canvas.height - 8);
+    ctx.strokeStyle = 'rgba(207, 234, 255, 0.95)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(6, 4, canvas.width - 12, canvas.height - 8);
+    ctx.fillStyle = '#f4fbff';
+    ctx.font = 'bold 20px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${hp}/${maxHp}`, canvas.width / 2, canvas.height / 2 + 1);
+    tex.needsUpdate = true;
+  }
+
   private rebuildMarkers(misses: Set<string>, hits: Set<string>): void {
     this.markerGroup.clear();
 
     for (const k of misses) {
-      const [x, y] = k.split(',').map(Number);
+      const parts = k.split(',');
+      const x = Number(parts[0] ?? 0);
+      const y = Number(parts[1] ?? 0);
       const m = new THREE.Mesh(
         new THREE.RingGeometry(0.12, 0.25, 16),
-        new THREE.MeshBasicMaterial({ color: 0x8ba8bf, side: THREE.DoubleSide })
+        new THREE.MeshBasicMaterial({ color: 0xe8f7ff, side: THREE.DoubleSide })
       );
       m.rotation.x = -Math.PI / 2;
       const p = this.worldForCell('target', { x, y });
@@ -279,10 +504,12 @@ export class BattleScene {
     }
 
     for (const k of hits) {
-      const [x, y] = k.split(',').map(Number);
+      const parts = k.split(',');
+      const x = Number(parts[0] ?? 0);
+      const y = Number(parts[1] ?? 0);
       const m = new THREE.Mesh(
         new THREE.SphereGeometry(0.18, 10, 10),
-        new THREE.MeshBasicMaterial({ color: 0xff9a67 })
+        new THREE.MeshBasicMaterial({ color: 0xff5b4a })
       );
       const p = this.worldForCell('target', { x, y });
       m.position.set(p.x, 0.25, p.z);
@@ -308,7 +535,7 @@ export class BattleScene {
       const p = this.worldForCell('own', own);
       const sel = new THREE.Mesh(
         new THREE.RingGeometry(0.2, 0.4, 20),
-        new THREE.MeshBasicMaterial({ color: 0xaed0ec, side: THREE.DoubleSide })
+        new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide })
       );
       sel.rotation.x = -Math.PI / 2;
       sel.position.set(p.x, 0.22, p.z);
@@ -318,7 +545,7 @@ export class BattleScene {
       const p = this.worldForCell('target', target);
       const sel = new THREE.Mesh(
         new THREE.RingGeometry(0.2, 0.4, 20),
-        new THREE.MeshBasicMaterial({ color: 0xf4c188, side: THREE.DoubleSide })
+        new THREE.MeshBasicMaterial({ color: 0xfff2d8, side: THREE.DoubleSide })
       );
       sel.rotation.x = -Math.PI / 2;
       sel.position.set(p.x, 0.22, p.z);
@@ -335,6 +562,120 @@ export class BattleScene {
     this.scene.add(imp);
     this.impactAnims.push({ mesh: imp, t: 0, duration: 0.45 });
     cb?.();
+  }
+
+  private rebuildImpactSmokes(markers: EphemeralImpactMarker[], ownShips: ShipInstance[]): void {
+    const keep = new Set<string>();
+    for (const marker of markers) {
+      const markerKey = `${marker.board}:${marker.shipUid}:${marker.target.x},${marker.target.y}`;
+      keep.add(markerKey);
+
+      let smoke = this.impactSmokes.get(markerKey);
+      if (!smoke) {
+        smoke = this.createImpactSmoke();
+        this.impactSmokes.set(markerKey, smoke);
+      }
+      this.positionImpactSmoke(smoke.group, marker, ownShips);
+    }
+
+    for (const [smokeKey, smoke] of this.impactSmokes) {
+      if (!keep.has(smokeKey)) {
+        smoke.group.parent?.remove(smoke.group);
+        this.impactSmokes.delete(smokeKey);
+      }
+    }
+  }
+
+  private createImpactSmoke(): ImpactSmokeMarker {
+    const group = new THREE.Group();
+    const puffs: SmokePuff[] = [];
+
+    for (let i = 0; i < 2; i += 1) {
+      const scorch = new THREE.Mesh(
+        new THREE.RingGeometry(0.01, 0.13 + i * 0.03, 16),
+        new THREE.MeshBasicMaterial({
+          color: 0x111111,
+          transparent: true,
+          opacity: 0.5 - i * 0.12,
+          depthWrite: false,
+        })
+      );
+      scorch.rotation.x = -Math.PI / 2;
+      scorch.position.set((i === 0 ? -1 : 1) * 0.06, 0, i === 0 ? 0.04 : -0.03);
+      group.add(scorch);
+    }
+
+    for (let i = 0; i < 3; i += 1) {
+      const puff = new THREE.Mesh(
+        new THREE.SphereGeometry(0.08, 8, 8),
+        new THREE.MeshBasicMaterial({
+          color: 0x1a1a1a,
+          transparent: true,
+          opacity: 0.24,
+          depthWrite: false,
+        })
+      );
+      puff.position.set(0, 0.08 + i * 0.04, 0);
+      group.add(puff);
+      puffs.push({
+        mesh: puff,
+        phase: i * 0.33,
+        driftX: (i - 1) * 0.05,
+        driftZ: (i % 2 === 0 ? 1 : -1) * 0.04,
+      });
+    }
+
+    return { group, puffs, startedAtMs: performance.now() };
+  }
+
+  private positionImpactSmoke(group: THREE.Group, marker: EphemeralImpactMarker, ownShips: ShipInstance[]): void {
+    if (marker.board === 'target') {
+      if (group.parent !== this.impactSmokeLayer) {
+        group.parent?.remove(group);
+        this.impactSmokeLayer.add(group);
+      }
+      const p = this.worldForCell('target', marker.target);
+      group.position.set(p.x, 0.28, p.z);
+      group.rotation.y = 0;
+      return;
+    }
+
+    const ship = ownShips.find((s) => s.uid === marker.shipUid && s.placed);
+    const meshShip = this.ships.get(marker.shipUid);
+    const local = ship ? this.impactOffsetForShipCell(ship, marker.target) : null;
+    if (!meshShip || !local) {
+      group.parent?.remove(group);
+      return;
+    }
+
+    if (group.parent !== meshShip.group) {
+      group.parent?.remove(group);
+      meshShip.group.add(group);
+    }
+    group.position.copy(local);
+    group.rotation.y = 0;
+  }
+
+  private impactOffsetForShipCell(ship: ShipInstance, target: Coord): THREE.Vector3 | null {
+    const size = shipCells(ship).length;
+    if (ship.orientation === 'H') {
+      if (target.y !== ship.anchor.y) {
+        return null;
+      }
+      const i = target.x - ship.anchor.x;
+      if (i < 0 || i >= size) {
+        return null;
+      }
+      return new THREE.Vector3(i - (size - 1) * 0.45, 0.22, 0);
+    }
+    if (target.x !== ship.anchor.x) {
+      return null;
+    }
+    const i = target.y - ship.anchor.y;
+    if (i < 0 || i >= size) {
+      return null;
+    }
+    return new THREE.Vector3(0, 0.22, i - (size - 1) * 0.45);
   }
 
   private tick = (): void => {
@@ -383,6 +724,32 @@ export class BattleScene {
       return true;
     });
 
+    for (const smoke of this.impactSmokes.values()) {
+      const age = (now - smoke.startedAtMs) / 1000;
+      for (const puff of smoke.puffs) {
+        const t = (age * 0.35 + puff.phase) % 1;
+        const scale = 0.65 + t * 1.35;
+        puff.mesh.scale.setScalar(scale);
+        puff.mesh.position.x = puff.driftX * t;
+        puff.mesh.position.z = puff.driftZ * t;
+        puff.mesh.position.y = 0.06 + t * 0.44;
+        const mat = puff.mesh.material as THREE.MeshBasicMaterial;
+        mat.opacity = Math.max(0, 0.24 * (1 - t));
+      }
+    }
+
+    // Smooth ship motion for movement planning previews.
+    const lerp = 1 - Math.exp(-dt * 12);
+    for (const [, ms] of this.ships) {
+      if (ms.sunkAnim) {
+        continue;
+      }
+      ms.group.position.x += (ms.targetPos.x - ms.group.position.x) * lerp;
+      ms.group.position.z += (ms.targetPos.z - ms.group.position.z) * lerp;
+      ms.group.position.y = ms.baseY;
+      ms.group.rotation.y += (ms.targetRotY - ms.group.rotation.y) * lerp;
+    }
+
     for (const [, ms] of this.ships) {
       if (!ms.sunkAnim) {
         continue;
@@ -391,8 +758,11 @@ export class BattleScene {
       const n = Math.min(ms.sunkAnim.t / 2.4, 1);
       ms.group.rotation.z = -n * 0.7;
       ms.group.position.y = ms.sunkAnim.startY - n * 1.4;
-      const mat = (ms.group.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
-      mat.opacity = Math.max(0, 1 - n);
+      for (const mat of ms.hullMaterials) {
+        mat.opacity = Math.max(0, 0.96 - n);
+      }
+      (ms.hpLabel.material as THREE.SpriteMaterial).opacity = Math.max(0, 1 - n);
+      (ms.hpFill.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 1 - n);
       if (n >= 1) {
         this.shipLayer.remove(ms.group);
       }
@@ -406,5 +776,48 @@ export class BattleScene {
     const ab = a.clone().lerp(b, t);
     const bc = b.clone().lerp(c, t);
     return ab.lerp(bc, t);
+  }
+
+  private computeMuzzles(
+    ship: ShipInstance | undefined,
+    gunCount: number,
+    incomingFromSky: boolean,
+    targetBoard: BoardKind,
+    target: Coord
+  ): THREE.Vector3[] {
+    const total = Math.max(1, gunCount);
+    if (incomingFromSky || !ship) {
+      const center = this.worldForCell(targetBoard, target);
+      const muzzles: THREE.Vector3[] = [];
+      for (let i = 0; i < total; i += 1) {
+        const arc = total > 1 ? i / (total - 1) - 0.5 : 0;
+        const p = center.clone();
+        p.x += arc * 1.2;
+        p.z += (i % 2 === 0 ? -1 : 1) * (0.18 + Math.floor(i / 2) * 0.12);
+        p.y = 7 + Math.abs(arc) * 1.4;
+        muzzles.push(p);
+      }
+      return muzzles;
+    }
+
+    const cells = shipCells(ship);
+    const len = cells.length;
+    const muzzles: THREE.Vector3[] = [];
+    for (let i = 0; i < total; i += 1) {
+      const cellIndex = total === 1 ? Math.floor((len - 1) / 2) : Math.round((i * (len - 1)) / (total - 1));
+      const p = this.worldForCell('own', cells[cellIndex]!);
+      const spread = total > 1 ? i / (total - 1) - 0.5 : 0;
+      const lateral = (i % 2 === 0 ? -1 : 1) * (0.08 + Math.floor(i / 2) * 0.08);
+      if (ship.orientation === 'H') {
+        p.x += spread * 0.25;
+        p.z += lateral;
+      } else {
+        p.x += lateral;
+        p.z += spread * 0.25;
+      }
+      p.y = 0.55;
+      muzzles.push(p);
+    }
+    return muzzles;
   }
 }

@@ -1,14 +1,14 @@
 :root {
-  --bg0: #071019;
-  --bg1: #0d1c2a;
-  --panel: #162838;
-  --line: #355772;
-  --text: #dce7ef;
-  --muted: #9bb0c2;
-  --danger: #d85d56;
-  --ok: #6fb37f;
-  --hit: #ff986d;
-  --miss: #84a5bf;
+  --bg0: #2f6688;
+  --bg1: #94cbeb;
+  --panel: #d4edf9;
+  --line: #2f5f7b;
+  --text: #112639;
+  --muted: #2d4e66;
+  --danger: #b73a35;
+  --ok: #1d7b43;
+  --hit: #d84a2c;
+  --miss: #2b5d7c;
 }
 
 * {
@@ -21,7 +21,7 @@ body {
   height: 100%;
   font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
   color: var(--text);
-  background: radial-gradient(circle at 30% 0%, #20384d 0%, var(--bg0) 40%, #04080f 100%);
+  background: radial-gradient(circle at 35% 0%, #c5ebff 0%, var(--bg1) 35%, var(--bg0) 100%);
 }
 
 #app {
@@ -35,7 +35,7 @@ body {
 }
 
 .panel {
-  background: linear-gradient(160deg, rgba(26, 48, 67, 0.96), rgba(13, 24, 38, 0.98));
+  background: linear-gradient(160deg, rgba(233, 248, 255, 0.97), rgba(180, 219, 243, 0.98));
   border-right: 1px solid var(--line);
   padding: 12px;
   overflow: auto;
@@ -51,7 +51,7 @@ body {
   border-radius: 8px;
   padding: 10px;
   margin-bottom: 12px;
-  background: rgba(10, 20, 32, 0.4);
+  background: rgba(245, 252, 255, 0.75);
 }
 
 h1,
@@ -71,9 +71,9 @@ h2 {
 
 button {
   appearance: none;
-  border: 1px solid #6486a3;
-  background: linear-gradient(180deg, #2a4d67 0%, #1f394d 100%);
-  color: var(--text);
+  border: 1px solid #33627f;
+  background: linear-gradient(180deg, #f3fcff 0%, #c5e6f9 100%);
+  color: #123047;
   padding: 8px 10px;
   border-radius: 6px;
   cursor: pointer;
@@ -90,8 +90,8 @@ button:disabled {
 }
 
 button.selected {
-  border-color: #d5e4f1;
-  box-shadow: 0 0 0 2px rgba(186, 210, 228, 0.22);
+  border-color: #123047;
+  box-shadow: 0 0 0 2px rgba(18, 48, 71, 0.2);
 }
 
 .main {
@@ -115,16 +115,41 @@ canvas {
   font-size: 13px;
 }
 
+.turn-indicator {
+  font-size: 16px;
+  font-weight: 700;
+  color: #11324a;
+}
+
 .list-item {
-  border: 1px solid #4b6b85;
+  border: 1px solid #4f7692;
   border-radius: 6px;
   margin-bottom: 6px;
   padding: 6px;
-  background: rgba(15, 28, 44, 0.55);
+  background: rgba(238, 248, 255, 0.82);
 }
 
 .list-item.dead {
   opacity: 0.45;
+}
+
+.list-item.ready-to-fire {
+  border-color: #2e6986;
+  box-shadow: inset 0 0 0 1px rgba(86, 170, 217, 0.45);
+}
+
+.list-item.spent-ship {
+  opacity: 0.58;
+  filter: grayscale(0.35);
+}
+
+button.ready-to-fire {
+  filter: saturate(1.08) brightness(1.03);
+}
+
+button.spent-ship {
+  background: linear-gradient(180deg, #e4edf1 0%, #bdcad2 100%);
+  color: #4b5f6d;
 }
 
 .notice {
@@ -147,15 +172,16 @@ canvas {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(3, 8, 16, 0.92);
+  background: rgba(10, 30, 46, 0.84);
   z-index: 10;
 }
 
 .overlay-card {
-  border: 1px solid #6789a3;
+  border: 1px solid #c9e7fa;
   border-radius: 10px;
   padding: 18px;
-  background: #132333;
+  background: #1f4861;
+  color: #e8f7ff;
   max-width: 420px;
   text-align: center;
 }
@@ -171,4 +197,17 @@ canvas {
   height: 12px;
   border-radius: 2px;
   margin-right: 6px;
+}
+
+.selected-ship-card {
+  margin-top: 8px;
+  margin-bottom: 6px;
+  padding: 8px;
+  border: 1px solid #4f7692;
+  border-radius: 6px;
+  background: rgba(235, 247, 255, 0.86);
+}
+
+.selected-ship-title {
+  margin-bottom: 4px;
 }
