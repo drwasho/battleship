@@ -1,0 +1,174 @@
+:root {
+  --bg0: #071019;
+  --bg1: #0d1c2a;
+  --panel: #162838;
+  --line: #355772;
+  --text: #dce7ef;
+  --muted: #9bb0c2;
+  --danger: #d85d56;
+  --ok: #6fb37f;
+  --hit: #ff986d;
+  --miss: #84a5bf;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at 30% 0%, #20384d 0%, var(--bg0) 40%, #04080f 100%);
+}
+
+#app {
+  height: 100%;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 320px 1fr 320px;
+  height: 100%;
+}
+
+.panel {
+  background: linear-gradient(160deg, rgba(26, 48, 67, 0.96), rgba(13, 24, 38, 0.98));
+  border-right: 1px solid var(--line);
+  padding: 12px;
+  overflow: auto;
+}
+
+.panel.right {
+  border-right: none;
+  border-left: 1px solid var(--line);
+}
+
+.section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 12px;
+  background: rgba(10, 20, 32, 0.4);
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0 0 8px;
+}
+
+h1 {
+  font-size: 20px;
+}
+
+h2 {
+  font-size: 16px;
+}
+
+button {
+  appearance: none;
+  border: 1px solid #6486a3;
+  background: linear-gradient(180deg, #2a4d67 0%, #1f394d 100%);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin: 3px;
+}
+
+button:hover {
+  filter: brightness(1.12);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.selected {
+  border-color: #d5e4f1;
+  box-shadow: 0 0 0 2px rgba(186, 210, 228, 0.22);
+}
+
+.main {
+  position: relative;
+}
+
+canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.stat {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.list-item {
+  border: 1px solid #4b6b85;
+  border-radius: 6px;
+  margin-bottom: 6px;
+  padding: 6px;
+  background: rgba(15, 28, 44, 0.55);
+}
+
+.list-item.dead {
+  opacity: 0.45;
+}
+
+.notice {
+  min-height: 20px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.notice.error {
+  color: var(--danger);
+}
+
+.notice.ok {
+  color: var(--ok);
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(3, 8, 16, 0.92);
+  z-index: 10;
+}
+
+.overlay-card {
+  border: 1px solid #6789a3;
+  border-radius: 10px;
+  padding: 18px;
+  background: #132333;
+  max-width: 420px;
+  text-align: center;
+}
+
+.menu {
+  display: grid;
+  gap: 8px;
+}
+
+.ship-icon {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  margin-right: 6px;
+}
