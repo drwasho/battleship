@@ -229,8 +229,8 @@ function shipMoveRange(ship: ShipInstance): number {
   return SHIP_BY_ID[ship.typeId].move;
 }
 
-function manhattan(a: Coord, b: Coord): number {
-  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+function chebyshev(a: Coord, b: Coord): number {
+  return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
 }
 
 function translateShip(ship: ShipInstance, to: Coord): ShipInstance {
@@ -246,7 +246,7 @@ export function canMoveShip(state: GameState, playerId: PlayerId, order: MoveOrd
   if (order.skip) {
     return true;
   }
-  if (manhattan(ship.anchor, order.to) > shipMoveRange(ship)) {
+  if (chebyshev(ship.anchor, order.to) > shipMoveRange(ship)) {
     return false;
   }
 

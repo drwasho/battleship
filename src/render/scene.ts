@@ -8,6 +8,7 @@ type BoardKind = 'own' | 'target';
 interface MeshShip {
   group: THREE.Group;
   hullMaterials: THREE.MeshStandardMaterial[];
+  hitMarkers: THREE.Group;
   baseY: number;
   targetPos: THREE.Vector3;
   targetRotY: number;
@@ -317,10 +318,14 @@ export class BattleScene {
         const g = new THREE.Group();
         const hull = this.buildShipHull(shipCells(ship).length * 0.9, ship.typeId);
         g.add(hull.group);
+        const hitMarkers = new THREE.Group();
+        hitMarkers.position.set(0, 0.24, 0);
+        g.add(hitMarkers);
         this.shipLayer.add(g);
         ms = {
           group: g,
           hullMaterials: hull.materials,
+          hitMarkers,
           baseY: 0.24,
           targetPos: g.position.clone(),
           targetRotY: g.rotation.y,
@@ -345,8 +350,20 @@ export class BattleScene {
         }
       }
 
-      // Segment-hit visuals are handled via hull color shift + ephemeral smoke.
-
+      // Persistent own-ship hit markers (so damage is obvious during movement).
+      ms.hitMarkers.clear();
+      for (const idx of ship.hits) {
+        const dot = new THREE.Mesh(
+          new THREE.SphereGeometry(0.12, 10, 10),
+          new THREE.MeshBasicMaterial({ color: 0xff5b4a })
+        );
+        if (ship.orientation === 'H') {
+          dot.position.set(idx - (SHIP_BY_ID[ship.typeId].size - 1) * 0.45, 0.02, 0);
+        } else {
+          dot.position.set(0, 0.02, idx - (SHIP_BY_ID[ship.typeId].size - 1) * 0.45);
+        }
+        ms.hitMarkers.add(dot);
+      }
 
       const pos = this.worldForCell('own', ship.anchor);
       const desiredX = pos.x + (ship.orientation === 'H' ? (shipCells(ship).length - 1) * 0.45 : 0);
@@ -471,26 +488,8 @@ export class BattleScene {
       this.previewGroup.add(tile);
     }
 
-    if (own) {
-      const p = this.worldForCell('own', own);
-      const sel = new THREE.Mesh(
-        new THREE.RingGeometry(0.2, 0.4, 20),
-        new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide })
-      );
-      sel.rotation.x = -Math.PI / 2;
-      sel.position.set(p.x, 0.22, p.z);
-      this.selectionGroup.add(sel);
-    }
-    if (target) {
-      const p = this.worldForCell('target', target);
-      const sel = new THREE.Mesh(
-        new THREE.RingGeometry(0.2, 0.4, 20),
-        new THREE.MeshBasicMaterial({ color: 0xfff2d8, side: THREE.DoubleSide })
-      );
-      sel.rotation.x = -Math.PI / 2;
-      sel.position.set(p.x, 0.22, p.z);
-      this.selectionGroup.add(sel);
-    }
+    // Selection rings removed (preview highlights are sufficient).
+
   }
 
   private spawnImpact(pos: THREE.Vector3, hit: boolean, cb?: () => void): void {

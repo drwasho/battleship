@@ -691,11 +691,15 @@ function render(): void {
     const phase = game?.phase;
     if (phase === 'firing_p1' || phase === 'firing_p2') {
       targetingOrientation = targetingOrientation === 'H' ? 'V' : 'H';
-    } else if (phase === 'movement_p1' || phase === 'movement_p2') {
-      movementOrientation = movementOrientation === 'H' ? 'V' : 'H';
-    } else {
-      placementOrientation = placementOrientation === 'H' ? 'V' : 'H';
+      render();
+      return;
     }
+    if (phase === 'movement_p1' || phase === 'movement_p2') {
+      movementOrientation = movementOrientation === 'H' ? 'V' : 'H';
+      render();
+      return;
+    }
+    placementOrientation = placementOrientation === 'H' ? 'V' : 'H';
     render();
   };
 

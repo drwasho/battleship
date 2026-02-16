@@ -27,7 +27,7 @@ describe('rules engine', () => {
     expect(placeShip(p, destroyer.uid, { x: 0, y: 0 }, 'V')).toBe(true);
   });
 
-  it('validates movement range and blocking', () => {
+  it('validates movement range and overlap (final-footprint)', () => {
     const state = createInitialState('2p');
     const p = state.players[0];
     const scout = p.ships.find((s) => s.typeId === 'scout')!;
@@ -38,6 +38,32 @@ describe('rules engine', () => {
 
     expect(canMoveShip(state, 0, { shipUid: scout.uid, to: { x: 6, y: 1 }, orientation: 'H' })).toBe(false);
     expect(canMoveShip(state, 0, { shipUid: scout.uid, to: { x: 2, y: 2 }, orientation: 'V' })).toBe(true);
+  });
+
+  it('preserves segment hits across movement', () => {
+    const state = createInitialState('2p');
+    const p1 = state.players[0];
+    const p2 = state.players[1];
+    const scout1 = p1.ships.find((s) => s.typeId === 'scout')!;
+    const scout2 = p2.ships.find((s) => s.typeId === 'scout')!;
+
+    placeShip(p1, scout1.uid, { x: 0, y: 0 }, 'H');
+    placeShip(p2, scout2.uid, { x: 2, y: 2 }, 'H');
+
+    // P1 hits one segment of P2 scout (gunCount=1)
+    const salvo = resolveSalvo(state, 0, scout1.uid, { x: 2, y: 2 }, 'H');
+    expect(salvo).not.toBeNull();
+    expect(scout2.hits.size).toBe(1);
+
+    // Move the damaged ship
+    const moveRes = resolveMovement(
+      state,
+      [],
+      [{ shipUid: scout2.uid, to: { x: 4, y: 4 }, orientation: 'V' }]
+    );
+    expect(moveRes.rejected).toEqual([]);
+    expect(scout2.anchor).toEqual({ x: 4, y: 4 });
+    expect(scout2.hits.size).toBe(1);
   });
 
   it('applies segment hits and supports destruction', () => {
