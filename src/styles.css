@@ -134,17 +134,17 @@ button.selected {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 10px;
+  bottom: 118px;
+  height: 0;
   z-index: 5;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  align-items: center;
-  padding: 0 18px;
   pointer-events: none;
 }
 
+.map-labels > .map-label {
+  position: absolute;
+}
+
 .map-label {
-  justify-self: center;
   padding: 6px 10px;
   border-radius: 10px;
   border: 1px solid rgba(79, 118, 146, 0.55);

@@ -84,6 +84,10 @@ export class BattleScene {
   private targetBoard = new THREE.Group();
   private ownOffset = new THREE.Vector3(-7.5, 0, 0);
   private targetOffset = new THREE.Vector3(7.5, 0, 0);
+
+  getBoardCenterX(board: BoardKind): number {
+    return board === 'own' ? this.ownOffset.x : this.targetOffset.x;
+  }
   private raycaster = new THREE.Raycaster();
   private mouse = new THREE.Vector2();
   private boardTiles: THREE.Mesh[] = [];
