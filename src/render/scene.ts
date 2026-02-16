@@ -454,8 +454,10 @@ export class BattleScene {
       }
 
       // Persistent own-ship hit markers (so damage is obvious during movement).
+      // Defensive: older/invalid state could have hits missing or non-Set.
+      const hits = ship.hits instanceof Set ? ship.hits : new Set<number>();
       ms.hitMarkers.clear();
-      for (const idx of ship.hits) {
+      for (const idx of hits) {
         const dot = new THREE.Mesh(
           new THREE.SphereGeometry(0.12, 10, 10),
           new THREE.MeshBasicMaterial({ color: 0xff5b4a })
