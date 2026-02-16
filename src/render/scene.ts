@@ -405,6 +405,24 @@ export class BattleScene {
     this.scene.add(this.radarGroup);
   }
 
+  private shipWorldPose(ship: ShipInstance): { pos: THREE.Vector3; rotY: number } {
+    const pos = this.worldForCell('own', ship.anchor);
+    const size = shipCells(ship).length;
+    const desiredX = pos.x + (ship.orientation === 'H' ? (size - 1) * 0.45 : 0);
+    const desiredZ = pos.z + (ship.orientation === 'V' ? (size - 1) * 0.45 : 0);
+    const desiredRotY = ship.orientation === 'H' ? 0 : Math.PI / 2;
+    return { pos: new THREE.Vector3(desiredX, 0, desiredZ), rotY: desiredRotY };
+  }
+
+  private cellWorldToShipLocal(ship: ShipInstance, cell: Coord, baseY: number): THREE.Vector3 {
+    const cellWorld = this.worldForCell('own', cell);
+    const pose = this.shipWorldPose(ship);
+    const v = cellWorld.clone().sub(new THREE.Vector3(pose.pos.x, baseY, pose.pos.z));
+    v.applyAxisAngle(new THREE.Vector3(0, 1, 0), -pose.rotY);
+    v.y = 0.22;
+    return v;
+  }
+
   private rebuildShips(
     ships: ShipInstance[],
     readyShipUids: Set<string> | undefined,
@@ -464,10 +482,7 @@ export class BattleScene {
         if (!cell) {
           continue;
         }
-        const world = this.worldForCell('own', cell);
-        world.y = ms.baseY + 0.22;
-        const local = ms.group.worldToLocal(world.clone());
-
+        const local = this.cellWorldToShipLocal(ship, cell, ms.baseY);
         const dot = new THREE.Mesh(
           new THREE.SphereGeometry(0.12, 10, 10),
           new THREE.MeshBasicMaterial({ color: 0xff5b4a })
@@ -476,13 +491,9 @@ export class BattleScene {
         ms.hitMarkers.add(dot);
       }
 
-      const pos = this.worldForCell('own', ship.anchor);
-      const desiredX = pos.x + (ship.orientation === 'H' ? (shipCells(ship).length - 1) * 0.45 : 0);
-      const desiredZ = pos.z + (ship.orientation === 'V' ? (shipCells(ship).length - 1) * 0.45 : 0);
-      const desiredRotY = ship.orientation === 'H' ? 0 : Math.PI / 2;
-
-      ms.targetPos.set(desiredX, ms.baseY, desiredZ);
-      ms.targetRotY = desiredRotY;
+      const pose = this.shipWorldPose(ship);
+      ms.targetPos.set(pose.pos.x, ms.baseY, pose.pos.z);
+      ms.targetRotY = pose.rotY;
 
       // Snap new ships into place; existing ships will smoothly interpolate in tick().
       if (ms.group.position.lengthSq() < 0.0001) {
@@ -717,10 +728,7 @@ export class BattleScene {
       meshShip.group.add(group);
     }
 
-    // Convert the hit cell's world position into the ship group's local space.
-    const world = this.worldForCell('own', marker.target);
-    world.y = meshShip.baseY + 0.22;
-    const local = meshShip.group.worldToLocal(world);
+    const local = this.cellWorldToShipLocal(ship, marker.target, meshShip.baseY);
     group.position.copy(local);
     group.rotation.y = 0;
   }
