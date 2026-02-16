@@ -8,7 +8,7 @@ function makeShips(owner: PlayerId): ShipInstance[] {
     owner,
     anchor: { x: 0, y: 0 },
     orientation: 'H',
-    hp: t.maxHp,
+    hits: new Set<number>(),
     placed: false,
     sunk: false,
   }));
@@ -23,7 +23,6 @@ export function createPlayer(id: PlayerId, name: string, isAI: boolean): PlayerS
     misses: new Set<string>(),
     ephemeralHits: new Set<string>(),
     ephemeralImpactMarkers: [],
-    destroyedEnemyTypes: [],
     destroyedEnemyShipUids: [],
   };
 }

@@ -16,7 +16,8 @@ import {
   randomMovePlan,
   resetFiringRound,
   resolveMovement,
-  resolveShot,
+  computeSalvoTargets,
+  resolveSalvo,
   shipCells,
 } from './engine/rules';
 import { createInitialState } from './engine/state';
@@ -59,6 +60,7 @@ let notice = '';
 let noticeKind: 'ok' | 'error' | '' = '';
 let placementOrientation: Orientation = 'H';
 let movementOrientation: Orientation = 'H';
+let targetingOrientation: Orientation = 'H';
 let selectedPlacementShipUid: string | null = null;
 let selectedFiringShipUid: string | null = null;
 let selectedMoveShipUid: string | null = null;
@@ -198,7 +200,6 @@ function startMenu(): void {
 
   scene.renderState({
     ownShips: [],
-    ownShipHpPercent: new Map(),
     targetMisses: new Set(),
     targetEphemeralHits: new Set(),
     ephemeralImpactMarkers: [],
@@ -213,6 +214,7 @@ function startGame(mode: '1p' | '2p'): void {
   activeViewer = 0;
   placementOrientation = 'H';
   movementOrientation = 'H';
+  targetingOrientation = 'H';
   selectedPlacementShipUid = game.players[0].ships[0]!.uid;
   selectedFiringShipUid = null;
   selectedMoveShipUid = null;
@@ -342,6 +344,15 @@ function getPreviewCells(): Coord[] {
     const copy: ShipInstance = { ...ship, anchor: hoverOwn, orientation: movementOrientation };
     return shipCells(copy);
   }
+  // Firing preview: show which squares will be hit by this ship's salvo.
+  if ((game.phase === 'firing_p1' || game.phase === 'firing_p2') && hoverTarget && selectedFiringShipUid) {
+    const ship = game.players[activeViewer].ships.find((s) => s.uid === selectedFiringShipUid && s.placed && !s.sunk);
+    if (!ship) {
+      return [];
+    }
+    const k = SHIP_BY_ID[ship.typeId].gunCount;
+    return computeSalvoTargets(hoverTarget, targetingOrientation, k);
+  }
   return [];
 }
 
@@ -360,10 +371,6 @@ function renderSceneOnly(): void {
     return;
   }
   const me = game.players[activeViewer];
-  const hpMap = new Map<string, number>();
-  for (const s of me.ships) {
-    hpMap.set(s.uid, s.hp / SHIP_BY_ID[s.typeId].maxHp);
-  }
 
   const moveMode = game.phase === 'movement_p1' || game.phase === 'movement_p2';
   const movementPreviewValidity = getMovementPreviewValidity();
@@ -399,23 +406,27 @@ function renderSceneOnly(): void {
     }
   }
 
+  const firingMode = game.phase === 'firing_p1' || game.phase === 'firing_p2';
   const sceneState: Parameters<typeof scene.renderState>[0] = {
     ownShips: ownShipsForScene,
-    ownShipHpPercent: hpMap,
     targetMisses: me.misses,
     targetEphemeralHits: me.ephemeralHits,
     ephemeralImpactMarkers: me.ephemeralImpactMarkers,
     firingReadyShipUids,
     firingSpentShipUids,
     previewCells: getPreviewCells(),
+    previewBoard: firingMode ? 'target' : 'own',
     previewColor:
       movementPreviewValidity === null ? 0x85dcff : movementPreviewValidity ? 0x6dff9b : 0xff6d6d,
   };
-  if (hoverOwn) {
-    sceneState.selectedOwnCell = hoverOwn;
-  }
-  if (hoverTarget) {
-    sceneState.selectedTargetCell = hoverTarget;
+  // Don't show selection "donuts" during firing — the salvo preview highlight is enough.
+  if (!firingMode) {
+    if (hoverOwn) {
+      sceneState.selectedOwnCell = hoverOwn;
+    }
+    if (hoverTarget) {
+      sceneState.selectedTargetCell = hoverTarget;
+    }
   }
   scene.renderState(sceneState);
 }
@@ -449,7 +460,7 @@ function render(): void {
     <div class="section">
       <h2>Controls</h2>
       <div class="row">
-        <button id="rotateBtn">Rotate (R): ${placementMode ? placementOrientation : movementOrientation}</button>
+        <button id="rotateBtn">Rotate (R): ${placementMode ? placementOrientation : moveMode ? movementOrientation : targetingOrientation}</button>
         <button id="menuBtn">Back to Menu</button>
       </div>
       <p class="notice ${noticeKind}">${notice}</p>
@@ -481,7 +492,7 @@ function render(): void {
             firingMode && s.placed && !s.sunk ? (canShipFire(state, activeViewer, s.uid) ? 'ready-to-fire' : 'spent-ship') : '';
           return `<div class="list-item ${s.sunk ? 'dead' : ''} ${firedClass}">
             <span class="ship-icon" style="background:#9daebc"></span>${t.name} (size ${t.size})<br/>
-            <span class="stat">HP ${s.hp}/${t.maxHp} • move ${t.move} • guns ${t.guns.map((g) => `${g.count}x${g.type}`).join(' + ')}</span>
+            <span class="stat">Size ${t.size} • move ${t.move} • guns ${t.gunCount}</span>
           </div>`;
         })
         .join('')}
@@ -531,15 +542,15 @@ function render(): void {
     const selectedShipCard = selectedShip
       ? (() => {
           const t = SHIP_BY_ID[selectedShip.typeId];
-          const gunList = t.guns.map((g) => `${g.count}x ${g.type}`).join(', ');
+          const gunList = `${t.gunCount}`;
           const firedLabel = canShipFire(state, activeViewer, selectedShip.uid) ? 'No' : 'Yes';
           const shipName = game.mode === '1p' ? `Your ${t.name}` : t.name;
           return `
             <div class="selected-ship-card">
               <p class="stat selected-ship-title">Selected Ship</p>
               <p><strong>${shipName}</strong></p>
-              <p class="stat">Size: ${t.size} • HP: ${selectedShip.hp}/${t.maxHp} • Move: ${t.move}</p>
-              <p class="stat">Guns: ${gunList}</p>
+              <p class="stat">Size: ${t.size} • Move: ${t.move} • Guns: ${t.gunCount}</p>
+              <p class="stat">Gun count: ${gunList}</p>
               <p class="stat">Fired this round: ${firedLabel}</p>
             </div>
           `;
@@ -629,8 +640,16 @@ function render(): void {
   }
 
   (document.querySelector('#rotateBtn') as HTMLButtonElement).onclick = () => {
-    placementOrientation = placementOrientation === 'H' ? 'V' : 'H';
-    movementOrientation = movementOrientation === 'H' ? 'V' : 'H';
+    if (placementMode) {
+      placementOrientation = placementOrientation === 'H' ? 'V' : 'H';
+    } else if (moveMode) {
+      movementOrientation = movementOrientation === 'H' ? 'V' : 'H';
+    } else if (firingMode) {
+      targetingOrientation = targetingOrientation === 'H' ? 'V' : 'H';
+    } else {
+      // default: rotate movement as a fallback
+      movementOrientation = movementOrientation === 'H' ? 'V' : 'H';
+    }
     render();
   };
   (document.querySelector('#menuBtn') as HTMLButtonElement).onclick = () => startMenu();
@@ -647,19 +666,25 @@ async function doHumanFire(playerId: PlayerId, shipUid: string, target: Coord): 
     setNotice('That ship already fired this round.', 'error');
     return;
   }
-  const result = resolveShot(game, playerId, shipUid, target);
-  if (!result) {
+  const ship = game.players[playerId].ships.find((s) => s.uid === shipUid);
+  if (!ship) {
+    setNotice('Invalid ship.', 'error');
+    return;
+  }
+
+  const salvoOrientation: Orientation = game.mode === '1p' && playerId !== activeViewer ? (rng.int(2) === 0 ? 'H' : 'V') : targetingOrientation;
+  const results = resolveSalvo(game, playerId, shipUid, target, salvoOrientation);
+  if (!results) {
     setNotice('Invalid shot.', 'error');
     return;
   }
 
-  const ship = game.players[playerId].ships.find((s) => s.uid === shipUid);
-  const gunCount = SHIP_BY_ID[ship!.typeId].guns.reduce((acc, g) => acc + g.count, 0);
+  const gunCount = SHIP_BY_ID[ship.typeId].gunCount;
   const defenderId: PlayerId = playerId === 0 ? 1 : 0;
   const targetBoard = defenderId === activeViewer ? 'own' : 'target';
   const incomingFromSky = defenderId === activeViewer && playerId !== activeViewer;
   const attacker = game.players[playerId];
-  const defender = game.players[defenderId];
+
   const applyMarkerOnce = (pid: PlayerId, marker: { board: 'own' | 'target'; shipUid: string; target: Coord }) => {
     const arr = game!.players[pid].ephemeralImpactMarkers;
     if (!arr.some((m) => m.board === marker.board && m.shipUid === marker.shipUid && m.target.x === marker.target.x && m.target.y === marker.target.y)) {
@@ -667,35 +692,36 @@ async function doHumanFire(playerId: PlayerId, shipUid: string, target: Coord): 
     }
   };
 
-  scene.animateShot(
+  const targets = computeSalvoTargets(target, salvoOrientation, gunCount);
+  const hitFlags = targets.map((t) => results.find((r) => r.target.x === t.x && r.target.y === t.y)?.hit ?? false);
+
+  scene.animateSalvo(
     incomingFromSky ? undefined : ship,
-    target,
-    gunCount,
-    result.hit,
-    () => {
-      // Apply visual markers only when the shells land.
-      if (!game) {
+    targets,
+    hitFlags,
+    (i) => {
+      const r = results[i];
+      if (!r || !game) {
         return;
       }
-      if (result.hit && result.hitShipUid) {
-        attacker.ephemeralHits.add(`${target.x},${target.y}`);
-        applyMarkerOnce(playerId, { board: 'target', shipUid: result.hitShipUid, target: { ...target } });
-        applyMarkerOnce(defenderId, { board: 'own', shipUid: result.hitShipUid, target: { ...target } });
+      const t = r.target;
+      if (r.hit && r.hitShipUid) {
+        attacker.ephemeralHits.add(`${t.x},${t.y}`);
+        applyMarkerOnce(playerId, { board: 'target', shipUid: r.hitShipUid, target: { ...t } });
+        applyMarkerOnce(defenderId, { board: 'own', shipUid: r.hitShipUid, target: { ...t } });
       } else {
-        attacker.misses.add(`${target.x},${target.y}`);
+        attacker.misses.add(`${t.x},${t.y}`);
       }
-
-      if (result.sunkShipUid) {
-        scene.sinkShip(result.sunkShipUid);
+      if (r.sunkShipUid) {
+        scene.sinkShip(r.sunkShipUid);
       }
-
-      // Re-render to show markers immediately after impact (during the animation window).
       renderSceneOnly();
     },
     { targetBoard, incomingFromSky, salvoDelayMs: 80 }
   );
 
-  setNotice(result.hit ? `Hit for ${result.damage} damage.` : 'Miss.', result.hit ? 'ok' : '');
+  const hitCount = results.filter((r) => r.hit).length;
+  setNotice(hitCount ? `Salvo: ${hitCount}/${results.length} hits.` : 'Salvo missed.', hitCount ? 'ok' : '');
   await wait(650);
 
   const winner = hasWinner(game);

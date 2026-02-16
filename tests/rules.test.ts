@@ -8,7 +8,7 @@ import {
   placeShip,
   randomFleetPlacement,
   resolveMovement,
-  resolveShot,
+  resolveSalvo,
   resetFiringRound,
   shipAt,
 } from '../src/engine/rules';
@@ -40,23 +40,22 @@ describe('rules engine', () => {
     expect(canMoveShip(state, 0, { shipUid: scout.uid, to: { x: 2, y: 2 }, orientation: 'V' })).toBe(true);
   });
 
-  it('applies firing damage and supports destruction', () => {
+  it('applies segment hits and supports destruction', () => {
     const state = createInitialState('2p');
     const p1 = state.players[0];
     const p2 = state.players[1];
-    const cruiser = p1.ships.find((s) => s.typeId === 'cruiser')!;
+    const destroyer = p1.ships.find((s) => s.typeId === 'destroyer')!;
     const scout = p2.ships.find((s) => s.typeId === 'scout')!;
 
-    placeShip(p1, cruiser.uid, { x: 0, y: 0 }, 'H');
+    placeShip(p1, destroyer.uid, { x: 0, y: 0 }, 'H');
     placeShip(p2, scout.uid, { x: 2, y: 2 }, 'H');
 
-    const first = resolveShot(state, 0, cruiser.uid, { x: 2, y: 2 });
-    expect(first?.hit).toBe(true);
-    expect(scout.hp).toBe(1);
+    const salvo = resolveSalvo(state, 0, destroyer.uid, { x: 2, y: 2 }, 'H');
+    expect(salvo).not.toBeNull();
+    expect(salvo!.some((r) => r.hit)).toBe(true);
 
-    resetFiringRound(state);
-    const second = resolveShot(state, 0, cruiser.uid, { x: 2, y: 2 });
-    expect(second?.sunkShipUid).toBe(scout.uid);
+    // Destroyer has 2 guns; centered-fit H salvo at (2,2) hits (2,2) and (3,2),
+    // which covers the scout's 2 segments => sunk.
     expect(scout.sunk).toBe(true);
     expect(p1.destroyedEnemyShipUids).toContain(scout.uid);
     expect(shipAt(p2, { x: 2, y: 2 })).toBeUndefined();
@@ -71,9 +70,9 @@ describe('rules engine', () => {
 
     placeShip(p1, cruiser.uid, { x: 0, y: 0 }, 'H');
     placeShip(p2, scout.uid, { x: 2, y: 2 }, 'H');
-    resolveShot(state, 0, cruiser.uid, { x: 2, y: 2 });
+    resolveSalvo(state, 0, cruiser.uid, { x: 2, y: 2 }, 'H');
     resetFiringRound(state);
-    resolveShot(state, 0, cruiser.uid, { x: 2, y: 2 });
+    resolveSalvo(state, 0, cruiser.uid, { x: 2, y: 2 }, 'H');
 
     expect(scout.sunk).toBe(true);
     expect(canMoveShip(state, 1, { shipUid: scout.uid, to: { x: 2, y: 2 }, orientation: 'H', skip: true })).toBe(false);
@@ -91,13 +90,13 @@ describe('rules engine', () => {
     placeShip(p2, scout.uid, { x: 2, y: 2 }, 'H');
 
     expect(canShipFire(state, 0, cruiser.uid)).toBe(true);
-    expect(resolveShot(state, 0, cruiser.uid, { x: 2, y: 2 })?.hit).toBe(true);
+    expect(resolveSalvo(state, 0, cruiser.uid, { x: 2, y: 2 }, 'H')?.some((r) => r.hit)).toBe(true);
     expect(canShipFire(state, 0, cruiser.uid)).toBe(false);
-    expect(resolveShot(state, 0, cruiser.uid, { x: 2, y: 2 })).toBeNull();
+    expect(resolveSalvo(state, 0, cruiser.uid, { x: 2, y: 2 }, 'H')).toBeNull();
 
     resetFiringRound(state);
     expect(canShipFire(state, 0, cruiser.uid)).toBe(true);
-    expect(resolveShot(state, 0, cruiser.uid, { x: 2, y: 2 })).not.toBeNull();
+    expect(resolveSalvo(state, 0, cruiser.uid, { x: 2, y: 2 }, 'H')).not.toBeNull();
   });
 
   it('chooses next firing player based on remaining unfired ships', () => {
@@ -114,10 +113,10 @@ describe('rules engine', () => {
     expect(hasUnfiredShips(state, 1)).toBe(true);
     expect(nextFiringPlayer(state, 0)).toBe(1);
 
-    resolveShot(state, 1, p2Scout.uid, { x: 0, y: 0 });
+    resolveSalvo(state, 1, p2Scout.uid, { x: 0, y: 0 }, 'H');
     expect(nextFiringPlayer(state, 0)).toBe(0);
 
-    resolveShot(state, 0, p1Scout.uid, { x: 4, y: 0 });
+    resolveSalvo(state, 0, p1Scout.uid, { x: 4, y: 0 }, 'H');
     expect(hasUnfiredShips(state, 0)).toBe(false);
     expect(hasUnfiredShips(state, 1)).toBe(false);
     expect(nextFiringPlayer(state, 0)).toBeNull();

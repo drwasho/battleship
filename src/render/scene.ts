@@ -8,11 +8,6 @@ type BoardKind = 'own' | 'target';
 interface MeshShip {
   group: THREE.Group;
   hullMaterials: THREE.MeshStandardMaterial[];
-  hpFill: THREE.Mesh;
-  hpLabel: THREE.Sprite;
-  hpLabelCanvas: HTMLCanvasElement;
-  hpLabelCtx: CanvasRenderingContext2D;
-  hpLabelTex: THREE.CanvasTexture;
   baseY: number;
   targetPos: THREE.Vector3;
   targetRotY: number;
@@ -62,13 +57,13 @@ interface ShotAnimOptions {
 
 export interface SceneState {
   ownShips: ShipInstance[];
-  ownShipHpPercent: Map<string, number>;
   targetMisses: Set<string>;
   targetEphemeralHits: Set<string>;
   ephemeralImpactMarkers: EphemeralImpactMarker[];
   firingReadyShipUids?: Set<string>;
   firingSpentShipUids?: Set<string>;
   previewCells: Coord[];
+  previewBoard?: BoardKind;
   previewColor: number;
   selectedOwnCell?: Coord;
   selectedTargetCell?: Coord;
@@ -176,25 +171,29 @@ export class BattleScene {
     return new THREE.Vector3(base.x - 4.5 + cell.x, 0.15, base.z - 4.5 + cell.y);
   }
 
-  animateShot(
+  animateSalvo(
     fromOwnShip: ShipInstance | undefined,
-    target: Coord,
-    gunCount: number,
-    hit: boolean,
-    onImpact?: () => void,
+    targets: Coord[],
+    hitFlags: boolean[],
+    onImpactEach?: (index: number) => void,
     options: ShotAnimOptions = {}
   ): void {
     const targetBoard = options.targetBoard ?? 'target';
     const incomingFromSky = options.incomingFromSky ?? false;
     const salvoDelayMs = options.salvoDelayMs ?? 80;
-    const muzzlePoints = this.computeMuzzles(fromOwnShip, gunCount, incomingFromSky, targetBoard, target);
-    const end = this.worldForCell(targetBoard, target);
-    end.y = 0.28;
 
-    for (let i = 0; i < muzzlePoints.length; i += 1) {
+    const muzzlePoints = this.computeSegmentMuzzles(fromOwnShip, targets.length, incomingFromSky, targetBoard, targets);
+
+    for (let i = 0; i < targets.length; i += 1) {
       const muzzle = muzzlePoints[i]!;
+      const target = targets[i]!;
+      const hit = hitFlags[i] ?? false;
+      const end = this.worldForCell(targetBoard, target);
+      end.y = 0.28;
+
       const timerId = window.setTimeout(() => {
         this.shotTimers = this.shotTimers.filter((id) => id !== timerId);
+
         if (!incomingFromSky) {
           const flash = new THREE.Mesh(
             new THREE.SphereGeometry(0.22, 10, 10),
@@ -207,10 +206,7 @@ export class BattleScene {
 
         const control = muzzle.clone().lerp(end, 0.5);
         control.y += incomingFromSky ? 1.4 : 3.8;
-        const proj = new THREE.Mesh(
-          new THREE.SphereGeometry(0.08, 8, 8),
-          new THREE.MeshBasicMaterial({ color: 0xffc36a })
-        );
+        const proj = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 8), new THREE.MeshBasicMaterial({ color: 0xffc36a }));
         proj.position.copy(muzzle);
         this.scene.add(proj);
         this.projectileAnims.push({
@@ -219,12 +215,25 @@ export class BattleScene {
           control,
           end: end.clone(),
           t: 0,
-          duration: incomingFromSky ? 0.42 + i * 0.025 : 0.55 + i * 0.03,
-          onDone: i === muzzlePoints.length - 1 ? () => this.spawnImpact(end, hit, onImpact) : undefined,
+          duration: incomingFromSky ? 0.42 + i * 0.02 : 0.55 + i * 0.025,
+          onDone: () => this.spawnImpact(end, hit, () => onImpactEach?.(i)),
         });
       }, i * salvoDelayMs);
+
       this.shotTimers.push(timerId);
     }
+  }
+
+  // Back-compat helper: single-target shot.
+  animateShot(
+    fromOwnShip: ShipInstance | undefined,
+    target: Coord,
+    gunCount: number,
+    hit: boolean,
+    onImpact?: () => void,
+    options: ShotAnimOptions = {}
+  ): void {
+    this.animateSalvo(fromOwnShip, [target], [hit], () => onImpact?.(), options);
   }
 
   sinkShip(uid: string): void {
@@ -235,10 +244,10 @@ export class BattleScene {
   }
 
   renderState(state: SceneState): void {
-    this.rebuildShips(state.ownShips, state.ownShipHpPercent, state.firingReadyShipUids, state.firingSpentShipUids);
+    this.rebuildShips(state.ownShips, state.firingReadyShipUids, state.firingSpentShipUids);
     this.rebuildImpactSmokes(state.ephemeralImpactMarkers, state.ownShips);
     this.rebuildMarkers(state.targetMisses, state.targetEphemeralHits);
-    this.rebuildPreview(state.previewCells, state.previewColor, state.selectedOwnCell, state.selectedTargetCell);
+    this.rebuildPreview(state.previewCells, state.previewColor, state.selectedOwnCell, state.selectedTargetCell, state.previewBoard ?? 'own');
   }
 
   private onResize = (): void => {
@@ -290,7 +299,6 @@ export class BattleScene {
 
   private rebuildShips(
     ships: ShipInstance[],
-    hp: Map<string, number>,
     readyShipUids: Set<string> | undefined,
     spentShipUids: Set<string> | undefined
   ): void {
@@ -305,17 +313,10 @@ export class BattleScene {
         const g = new THREE.Group();
         const hull = this.buildShipHull(shipCells(ship).length * 0.9, ship.typeId);
         g.add(hull.group);
-        const hpUi = this.buildShipHpUi();
-        g.add(hpUi.container);
         this.shipLayer.add(g);
         ms = {
           group: g,
           hullMaterials: hull.materials,
-          hpFill: hpUi.fill,
-          hpLabel: hpUi.label,
-          hpLabelCanvas: hpUi.canvas,
-          hpLabelCtx: hpUi.ctx,
-          hpLabelTex: hpUi.texture,
           baseY: 0.24,
           targetPos: g.position.clone(),
           targetRotY: g.rotation.y,
@@ -323,8 +324,8 @@ export class BattleScene {
         this.ships.set(ship.uid, ms);
       }
 
-      const perc = hp.get(ship.uid) ?? 1;
-      const damageN = 1 - Math.max(0, Math.min(1, perc));
+      const size = SHIP_BY_ID[ship.typeId].size;
+      const damageN = size ? Math.min(1, ship.hits.size / size) : 0;
       const baseColor = new THREE.Color(SHIP_COLORS[ship.typeId]);
       const damagedColor = baseColor.clone().lerp(new THREE.Color(0x6d4f49), damageN * 0.55);
       for (const mat of ms.hullMaterials) {
@@ -340,11 +341,8 @@ export class BattleScene {
         }
       }
 
-      ms.hpFill.scale.x = Math.max(0.02, Math.min(1, perc));
-      ms.hpFill.position.x = -0.31 + ms.hpFill.scale.x * 0.31;
-      (ms.hpFill.material as THREE.MeshBasicMaterial).color.set(perc > 0.6 ? 0x78ed9d : perc > 0.3 ? 0xffcd62 : 0xff6f62);
-      this.drawHpLabel(ms, ship.hp, SHIP_BY_ID[ship.typeId].maxHp);
-      ms.hpLabel.position.set(0, 1.18, 0);
+      // Segment-hit visuals are handled via hull color shift + ephemeral smoke.
+
 
       const pos = this.worldForCell('own', ship.anchor);
       const desiredX = pos.x + (ship.orientation === 'H' ? (shipCells(ship).length - 1) * 0.45 : 0);
@@ -424,68 +422,6 @@ export class BattleScene {
     return { group: hullGroup, materials: [hullMat, towerMat] };
   }
 
-  private buildShipHpUi(): {
-    container: THREE.Group;
-    fill: THREE.Mesh;
-    label: THREE.Sprite;
-    canvas: HTMLCanvasElement;
-    ctx: CanvasRenderingContext2D;
-    texture: THREE.CanvasTexture;
-  } {
-    const container = new THREE.Group();
-    container.position.set(0, 0.82, 0);
-
-    const bg = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.64, 0.08),
-      new THREE.MeshBasicMaterial({ color: 0x1e2d37, transparent: true, opacity: 0.9, depthTest: false })
-    );
-    container.add(bg);
-
-    const fill = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.62, 0.05),
-      new THREE.MeshBasicMaterial({ color: 0x78ed9d, depthTest: false })
-    );
-    fill.position.z = 0.001;
-    fill.position.x = 0;
-    container.add(fill);
-
-    const canvas = document.createElement('canvas');
-    canvas.width = 128;
-    canvas.height = 44;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      throw new Error('Failed to create HP label context');
-    }
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.needsUpdate = true;
-    const label = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: texture,
-        transparent: true,
-        depthTest: false,
-      })
-    );
-    label.scale.set(0.95, 0.3, 1);
-    container.add(label);
-    return { container, fill, label, canvas, ctx, texture };
-  }
-
-  private drawHpLabel(ship: MeshShip, hp: number, maxHp: number): void {
-    const { hpLabelCtx: ctx, hpLabelCanvas: canvas, hpLabelTex: tex } = ship;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = 'rgba(16, 30, 42, 0.86)';
-    ctx.fillRect(6, 4, canvas.width - 12, canvas.height - 8);
-    ctx.strokeStyle = 'rgba(207, 234, 255, 0.95)';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(6, 4, canvas.width - 12, canvas.height - 8);
-    ctx.fillStyle = '#f4fbff';
-    ctx.font = 'bold 20px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(`${hp}/${maxHp}`, canvas.width / 2, canvas.height / 2 + 1);
-    tex.needsUpdate = true;
-  }
-
   private rebuildMarkers(misses: Set<string>, hits: Set<string>): void {
     this.markerGroup.clear();
 
@@ -517,12 +453,12 @@ export class BattleScene {
     }
   }
 
-  private rebuildPreview(cells: Coord[], color: number, own?: Coord, target?: Coord): void {
+  private rebuildPreview(cells: Coord[], color: number, own?: Coord, target?: Coord, previewBoard: BoardKind = 'own'): void {
     this.previewGroup.clear();
     this.selectionGroup.clear();
 
     for (const c of cells) {
-      const p = this.worldForCell('own', c);
+      const p = this.worldForCell(previewBoard, c);
       const tile = new THREE.Mesh(
         new THREE.BoxGeometry(0.92, 0.07, 0.92),
         new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55 })
@@ -761,8 +697,8 @@ export class BattleScene {
       for (const mat of ms.hullMaterials) {
         mat.opacity = Math.max(0, 0.96 - n);
       }
-      (ms.hpLabel.material as THREE.SpriteMaterial).opacity = Math.max(0, 1 - n);
-      (ms.hpFill.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 1 - n);
+      // (HP UI removed)
+
       if (n >= 1) {
         this.shipLayer.remove(ms.group);
       }
@@ -776,6 +712,38 @@ export class BattleScene {
     const ab = a.clone().lerp(b, t);
     const bc = b.clone().lerp(c, t);
     return ab.lerp(bc, t);
+  }
+
+  private computeSegmentMuzzles(
+    ship: ShipInstance | undefined,
+    gunCount: number,
+    incomingFromSky: boolean,
+    targetBoard: BoardKind,
+    targets: Coord[]
+  ): THREE.Vector3[] {
+    const total = Math.max(1, gunCount);
+    if (incomingFromSky || !ship) {
+      // One spawn point per shell, roughly above the target line.
+      return targets.map((t, i) => {
+        const center = this.worldForCell(targetBoard, t);
+        const p = center.clone();
+        p.y = 6.2;
+        p.x += (i - (targets.length - 1) / 2) * 0.35;
+        p.z += (i % 2 === 0 ? 1 : -1) * 0.15;
+        return p;
+      });
+    }
+
+    // Simple mapping: shell i originates from ship segment i.
+    const cells = shipCells(ship);
+    const out: THREE.Vector3[] = [];
+    for (let i = 0; i < total; i += 1) {
+      const cell = cells[Math.min(i, cells.length - 1)]!;
+      const wp = this.worldForCell('own', cell);
+      wp.y = 0.65;
+      out.push(wp);
+    }
+    return out;
   }
 
   private computeMuzzles(

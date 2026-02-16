@@ -1,4 +1,4 @@
-import { BOARD_SIZE, GUN_DAMAGE, SHIP_BY_ID, SHIPS } from './data';
+import { BOARD_SIZE, SHIP_BY_ID, SHIPS } from './data';
 import { SeededRng } from './rng';
 import type {
   Coord,
@@ -90,10 +90,47 @@ export function shipAt(player: PlayerState, target: Coord): ShipInstance | undef
   return player.ships.find((s) => s.placed && !s.sunk && shipCells(s).some((c) => c.x === target.x && c.y === target.y));
 }
 
-export function shipDamage(ship: ShipInstance): number {
-  const template = SHIP_BY_ID[ship.typeId];
-  const total = template.guns.reduce((acc, g) => acc + g.count * GUN_DAMAGE[g.type], 0);
-  return total;
+export function segmentIndexAt(ship: ShipInstance, target: Coord): number | null {
+  const size = shipCells(ship).length;
+  if (ship.orientation === 'H') {
+    if (target.y !== ship.anchor.y) {
+      return null;
+    }
+    const i = target.x - ship.anchor.x;
+    return i >= 0 && i < size ? i : null;
+  }
+  if (target.x !== ship.anchor.x) {
+    return null;
+  }
+  const i = target.y - ship.anchor.y;
+  return i >= 0 && i < size ? i : null;
+}
+
+export function computeSalvoTargets(origin: Coord, orientation: ShipInstance['orientation'], count: number): Coord[] {
+  const k = Math.max(1, Math.floor(count));
+  const maxStart = BOARD_SIZE - k;
+  if (orientation === 'H') {
+    let startX = origin.x - Math.floor((k - 1) / 2);
+    startX = Math.max(0, Math.min(maxStart, startX));
+    const y = origin.y;
+    const out: Coord[] = [];
+    for (let i = 0; i < k; i += 1) {
+      out.push({ x: startX + i, y });
+    }
+    return out.filter(inBounds);
+  }
+  let startY = origin.y - Math.floor((k - 1) / 2);
+  startY = Math.max(0, Math.min(maxStart, startY));
+  const x = origin.x;
+  const out: Coord[] = [];
+  for (let i = 0; i < k; i += 1) {
+    out.push({ x, y: startY + i });
+  }
+  return out.filter(inBounds);
+}
+
+export function shipGunCount(ship: ShipInstance): number {
+  return SHIP_BY_ID[ship.typeId].gunCount;
 }
 
 function addEphemeralImpactMarker(
@@ -108,46 +145,56 @@ function addEphemeralImpactMarker(
   }
 }
 
-export function resolveShot(state: GameState, attackerId: PlayerId, shipUid: string, target: Coord): ShotResult | null {
+export function resolveSalvo(
+  state: GameState,
+  attackerId: PlayerId,
+  shipUid: string,
+  originTarget: Coord,
+  targetOrientation: ShipInstance['orientation']
+): ShotResult[] | null {
   const defenderId = attackerId === 0 ? 1 : 0;
   const attacker = state.players[attackerId];
   const defender = state.players[defenderId];
   const ship = attacker.ships.find((s) => s.uid === shipUid && !s.sunk && s.placed);
-  if (!ship || !inBounds(target) || state.firedThisRound[attackerId].has(shipUid)) {
+  if (!ship || !inBounds(originTarget) || state.firedThisRound[attackerId].has(shipUid)) {
     return null;
   }
 
-  const hitShip = shipAt(defender, target);
-  const damage = shipDamage(ship);
-  const result: ShotResult = {
-    attacker: attackerId,
-    defender: defenderId,
-    shipUid,
-    target: cloneCoord(target),
-    hit: Boolean(hitShip),
-    damage,
-  };
+  const targets = computeSalvoTargets(originTarget, targetOrientation, shipGunCount(ship));
+  const results: ShotResult[] = [];
 
-  if (hitShip) {
-    result.hitShipUid = hitShip.uid;
-    hitShip.hp = Math.max(0, hitShip.hp - damage);
-    if (hitShip.hp === 0) {
-      hitShip.sunk = true;
-      result.sunkShipUid = hitShip.uid;
-      attacker.destroyedEnemyTypes.push(hitShip.typeId);
-      if (!attacker.destroyedEnemyShipUids.includes(hitShip.uid)) {
-        attacker.destroyedEnemyShipUids.push(hitShip.uid);
+  for (const target of targets) {
+    const hitShip = shipAt(defender, target);
+    const result: ShotResult = {
+      attacker: attackerId,
+      defender: defenderId,
+      shipUid,
+      target: cloneCoord(target),
+      hit: Boolean(hitShip),
+    };
+
+    if (hitShip) {
+      result.hitShipUid = hitShip.uid;
+      const seg = segmentIndexAt(hitShip, target);
+      if (seg !== null) {
+        hitShip.hits.add(seg);
+        const size = SHIP_BY_ID[hitShip.typeId].size;
+        if (hitShip.hits.size >= size) {
+          hitShip.sunk = true;
+          result.sunkShipUid = hitShip.uid;
+          if (!attacker.destroyedEnemyShipUids.includes(hitShip.uid)) {
+            attacker.destroyedEnemyShipUids.push(hitShip.uid);
+          }
+        }
       }
     }
-    // Note: ephemeral visuals (hit markers / smoke) are applied by the UI layer on impact,
-    // so they appear only after shells land.
-  } else {
-    // Note: miss markers are applied by the UI layer on impact (after the splash).
+
+    state.shotLog.push(result);
+    results.push(result);
   }
 
-  state.shotLog.push(result);
   state.firedThisRound[attackerId].add(shipUid);
-  return result;
+  return results;
 }
 
 export function resetFiringRound(state: GameState): void {
