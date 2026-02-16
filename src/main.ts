@@ -43,6 +43,14 @@ const rightPanel = document.querySelector<HTMLDivElement>('#rightPanel')!;
 const mainView = document.querySelector<HTMLDivElement>('#mainView')!;
 const topbar = document.querySelector<HTMLDivElement>('#topbar')!;
 
+const mapLabels = document.createElement('div');
+mapLabels.className = 'map-labels';
+mapLabels.innerHTML = `
+  <div class="map-label map-label-own">Your fleet</div>
+  <div class="map-label map-label-target">Targeting radar</div>
+`;
+mainView.appendChild(mapLabels);
+
 let soundEnabled = true;
 let soundVolume = 0.7;
 
@@ -162,7 +170,22 @@ document.addEventListener('keydown', (ev) => {
   render();
 });
 
-scene.getCanvas().addEventListener('mousemove', (ev) => {
+// Use a window-level pointermove so hover works even if the last click was on a
+// non-intersecting area (between boards) and the canvas doesn't receive move events
+// due to focus/pointer quirks.
+window.addEventListener('pointermove', (ev) => {
+  const canvas = scene.getCanvas();
+  const rect = canvas.getBoundingClientRect();
+  const inside = ev.clientX >= rect.left && ev.clientX <= rect.right && ev.clientY >= rect.top && ev.clientY <= rect.bottom;
+  if (!inside) {
+    if (hoverOwn || hoverTarget) {
+      hoverOwn = undefined;
+      hoverTarget = undefined;
+      renderSceneOnly();
+    }
+    return;
+  }
+
   const hit = scene.pick(ev.clientX, ev.clientY);
   hoverOwn = undefined;
   hoverTarget = undefined;

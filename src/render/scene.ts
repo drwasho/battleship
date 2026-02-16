@@ -75,6 +75,8 @@ export class BattleScene {
   private renderer: THREE.WebGLRenderer;
   private pulseShipUid: string | null = null;
   private pulsePhase = 0;
+  private radarGroup = new THREE.Group();
+  private radarSweep: THREE.Mesh | null = null;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private ownBoard = new THREE.Group();
@@ -138,6 +140,7 @@ export class BattleScene {
 
     this.buildBoard(this.ownBoard, 'own', this.ownOffset);
     this.buildBoard(this.targetBoard, 'target', this.targetOffset);
+    this.buildRadarOverlay();
 
     window.addEventListener('resize', this.onResize);
     this.tick();
@@ -262,19 +265,39 @@ export class BattleScene {
   };
 
   private buildBoard(group: THREE.Group, board: BoardKind, offset: THREE.Vector3): void {
+    const isRadar = board === 'target';
     const frame = new THREE.Mesh(
       new THREE.BoxGeometry(11.2, 0.22, 11.2),
-      new THREE.MeshStandardMaterial({ color: 0x7fb4d8, roughness: 0.4, metalness: 0.35, emissive: 0x264d66, emissiveIntensity: 0.25 })
+      new THREE.MeshStandardMaterial({
+        color: isRadar ? 0x1a6b49 : 0x7fb4d8,
+        roughness: 0.4,
+        metalness: 0.35,
+        emissive: isRadar ? 0x0c2519 : 0x264d66,
+        emissiveIntensity: isRadar ? 0.42 : 0.25,
+      })
     );
     frame.position.copy(offset.clone().setY(-0.02));
     group.add(frame);
 
     for (let y = 0; y < BOARD_SIZE; y += 1) {
       for (let x = 0; x < BOARD_SIZE; x += 1) {
-        const shade = (x + y) % 2 === 0 ? 0x8ec4e8 : 0x79afd5;
+        const shade =
+          board === 'target'
+            ? (x + y) % 2 === 0
+              ? 0x154c33
+              : 0x0f3f2a
+            : (x + y) % 2 === 0
+              ? 0x8ec4e8
+              : 0x79afd5;
         const tile = new THREE.Mesh(
           new THREE.BoxGeometry(0.95, 0.06, 0.95),
-          new THREE.MeshStandardMaterial({ color: shade, roughness: 0.35, metalness: 0.2, emissive: 0x1d4d69, emissiveIntensity: 0.16 })
+          new THREE.MeshStandardMaterial({
+            color: shade,
+            roughness: 0.35,
+            metalness: 0.2,
+            emissive: board === 'target' ? 0x071c12 : 0x1d4d69,
+            emissiveIntensity: board === 'target' ? 0.32 : 0.16,
+          })
         );
         tile.position.set(offset.x - 4.5 + x, 0.02, offset.z - 4.5 + y);
         tile.userData.board = board;
@@ -297,9 +320,60 @@ export class BattleScene {
     }
     const grid = new THREE.LineSegments(
       new THREE.BufferGeometry().setFromPoints(points),
-      new THREE.LineBasicMaterial({ color: 0xe9f7ff, transparent: true, opacity: 0.95 })
+      new THREE.LineBasicMaterial({
+        color: board === 'target' ? 0x4ec48c : 0xe9f7ff,
+        transparent: true,
+        opacity: board === 'target' ? 0.55 : 0.95,
+      })
     );
     group.add(grid);
+  }
+
+  private buildRadarOverlay(): void {
+    // A subtle radar sweep + radial spokes on the targeting board.
+    this.radarGroup.clear();
+    const center = new THREE.Vector3(this.targetOffset.x, 0.12, this.targetOffset.z);
+    this.radarGroup.position.copy(center);
+
+    const radius = 5.05;
+
+    // radial spokes
+    const spokes: THREE.Vector3[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      const a = (i / 12) * Math.PI * 2;
+      spokes.push(new THREE.Vector3(0, 0, 0), new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius));
+    }
+    const spokesMesh = new THREE.LineSegments(
+      new THREE.BufferGeometry().setFromPoints(spokes),
+      new THREE.LineBasicMaterial({ color: 0x4ec48c, transparent: true, opacity: 0.18 })
+    );
+    this.radarGroup.add(spokesMesh);
+
+    // sweep line (thin triangle/plane rotated around Y)
+    const sweepGeom = new THREE.PlaneGeometry(radius, 0.06);
+    const sweepMat = new THREE.MeshBasicMaterial({
+      color: 0x7bffbf,
+      transparent: true,
+      opacity: 0.35,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const sweep = new THREE.Mesh(sweepGeom, sweepMat);
+    sweep.rotation.x = -Math.PI / 2;
+    sweep.position.set(radius / 2, 0.002, 0);
+    this.radarGroup.add(sweep);
+    this.radarSweep = sweep;
+
+    // faint ring
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(radius - 0.02, radius, 64),
+      new THREE.MeshBasicMaterial({ color: 0x4ec48c, transparent: true, opacity: 0.12, side: THREE.DoubleSide })
+    );
+    ring.rotation.x = -Math.PI / 2;
+    this.radarGroup.add(ring);
+
+    this.scene.add(this.radarGroup);
   }
 
   private rebuildShips(
@@ -712,6 +786,10 @@ export class BattleScene {
         const extra = isPulse ? 0.34 * pulse : 0;
         mat.emissiveIntensity = base + extra;
       }
+    }
+
+    if (this.radarSweep) {
+      this.radarSweep.rotation.z = this.pulsePhase * 1.1;
     }
 
     for (const [, ms] of this.ships) {
