@@ -941,6 +941,8 @@ async function doHumanFire(playerId: PlayerId, shipUid: string, target: Coord): 
 
   const nextShooter = nextFiringPlayer(game, playerId);
   if (nextShooter === null || (!hasUnfiredShips(game, 0) && !hasUnfiredShips(game, 1))) {
+    // Ephemeral reveal should not persist into the movement phase.
+    clearEphemeral(game);
     game.phase = 'movement_p1';
     selectedMoveShipUid = game.players[0].ships.find((s) => !s.sunk && s.placed)?.uid ?? null;
     plannedMoves[0].clear();

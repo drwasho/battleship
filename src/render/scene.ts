@@ -651,15 +651,7 @@ export class BattleScene {
     const group = new THREE.Group();
     const puffs: SmokePuff[] = [];
 
-    // Hit dot for own-ship impacts (matches the target-board red hit marker vibe)
-    const hitDot = new THREE.Mesh(
-      new THREE.SphereGeometry(0.14, 10, 10),
-      new THREE.MeshBasicMaterial({ color: 0xff5b4a, transparent: true, opacity: 0.95 })
-    );
-    hitDot.name = 'hitDot';
-    hitDot.position.set(0, 0.05, 0);
-    hitDot.visible = false;
-    group.add(hitDot);
+    // Red hit dot is rendered persistently via ship hitMarkers; smoke stays purely smoke here.
 
     for (let i = 0; i < 2; i += 1) {
       const scorch = new THREE.Mesh(
@@ -700,11 +692,6 @@ export class BattleScene {
   }
 
   private positionImpactSmoke(group: THREE.Group, marker: EphemeralImpactMarker, ownShips: ShipInstance[]): void {
-    const hitDot = group.getObjectByName('hitDot') as THREE.Mesh | null;
-    if (hitDot) {
-      hitDot.visible = marker.board === 'own';
-    }
-
     if (marker.board === 'target') {
       if (group.parent !== this.impactSmokeLayer) {
         group.parent?.remove(group);
