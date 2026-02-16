@@ -36,7 +36,7 @@ describe('rules engine', () => {
     placeShip(p, scout.uid, { x: 1, y: 1 }, 'H');
     placeShip(p, destroyer.uid, { x: 5, y: 1 }, 'V');
 
-    expect(canMoveShip(state, 0, { shipUid: scout.uid, to: { x: 4, y: 1 }, orientation: 'H' })).toBe(false);
+    expect(canMoveShip(state, 0, { shipUid: scout.uid, to: { x: 6, y: 1 }, orientation: 'H' })).toBe(false);
     expect(canMoveShip(state, 0, { shipUid: scout.uid, to: { x: 2, y: 2 }, orientation: 'V' })).toBe(true);
   });
 

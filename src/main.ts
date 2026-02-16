@@ -22,13 +22,16 @@ import {
 } from './engine/rules';
 import { createInitialState } from './engine/state';
 import type { Coord, GameState, MoveOrder, Orientation, PlayerId, ShipInstance, ShipTypeId } from './engine/types';
+import { sfx } from './audio/sfx';
 import { BattleScene } from './render/scene';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
   <div class="layout" id="layout">
     <aside class="panel" id="leftPanel"></aside>
-    <main class="main" id="mainView"></main>
+    <main class="main" id="mainView">
+      <div class="topbar" id="topbar"></div>
+    </main>
     <aside class="panel right" id="rightPanel"></aside>
   </div>
 `;
@@ -36,6 +39,27 @@ app.innerHTML = `
 const leftPanel = document.querySelector<HTMLDivElement>('#leftPanel')!;
 const rightPanel = document.querySelector<HTMLDivElement>('#rightPanel')!;
 const mainView = document.querySelector<HTMLDivElement>('#mainView')!;
+const topbar = document.querySelector<HTMLDivElement>('#topbar')!;
+
+let soundEnabled = true;
+let soundVolume = 0.7;
+
+let audioPrimed = false;
+async function primeAudio(): Promise<void> {
+  if (audioPrimed || !soundEnabled) {
+    return;
+  }
+  audioPrimed = true;
+  await sfx.enable();
+  sfx.setVolume(soundVolume);
+}
+
+document.addEventListener('pointerdown', () => {
+  void primeAudio();
+}, { once: true });
+document.addEventListener('keydown', () => {
+  void primeAudio();
+}, { once: true });
 
 const passOverlay = document.createElement('div');
 passOverlay.className = 'overlay';
@@ -102,11 +126,19 @@ passOverlay.querySelector<HTMLButtonElement>('#passBtn')!.onclick = () => {
 };
 
 document.addEventListener('keydown', (ev) => {
-  if (ev.key.toLowerCase() === 'r') {
-    placementOrientation = placementOrientation === 'H' ? 'V' : 'H';
-    movementOrientation = movementOrientation === 'H' ? 'V' : 'H';
-    render();
+  if (ev.key.toLowerCase() !== 'r') {
+    return;
   }
+  const phase = game?.phase;
+  if (phase === 'firing_p1' || phase === 'firing_p2') {
+    targetingOrientation = targetingOrientation === 'H' ? 'V' : 'H';
+  } else if (phase === 'movement_p1' || phase === 'movement_p2') {
+    movementOrientation = movementOrientation === 'H' ? 'V' : 'H';
+  } else {
+    // placement (or menu/default)
+    placementOrientation = placementOrientation === 'H' ? 'V' : 'H';
+  }
+  render();
 });
 
 scene.getCanvas().addEventListener('mousemove', (ev) => {
@@ -168,6 +200,10 @@ scene.getCanvas().addEventListener('click', async (ev) => {
       setNotice('Illegal move. Choose a different destination/orientation.', 'error');
     } else {
       plannedMoves[activeViewer].set(selectedMoveShipUid, order);
+      if (soundEnabled) {
+        void primeAudio();
+        sfx.play('move', 0.75);
+      }
       setNotice('Move planned.', 'ok');
       const next = game.players[activeViewer].ships.find((s) => !s.sunk && s.placed && !plannedMoves[activeViewer].has(s.uid));
       selectedMoveShipUid = next?.uid ?? selectedMoveShipUid;
@@ -180,6 +216,7 @@ scene.getCanvas().addEventListener('click', async (ev) => {
 function startMenu(): void {
   game = null;
   activeViewer = 0;
+  topbar.innerHTML = '';
   clearNotice();
   leftPanel.innerHTML = `
     <div class="section">
@@ -418,6 +455,7 @@ function renderSceneOnly(): void {
     previewBoard: firingMode ? 'target' : 'own',
     previewColor:
       movementPreviewValidity === null ? 0x85dcff : movementPreviewValidity ? 0x6dff9b : 0xff6d6d,
+    pulseShipUid: moveMode ? selectedMoveShipUid : null,
   };
   // Don't show selection "donuts" during firing — the salvo preview highlight is enough.
   if (!firingMode) {
@@ -445,6 +483,8 @@ function render(): void {
   const firingMode = state.phase === 'firing_p1' || state.phase === 'firing_p2';
   const moveMode = state.phase === 'movement_p1' || state.phase === 'movement_p2';
   const turnIndicator = turnIndicatorText();
+  const phasePretty = game.phase.replace('_', ' ');
+  topbar.innerHTML = `<div class="topbar-inner"><span class="topbar-title">${turnIndicator || ''}</span><span class="topbar-sub">Round ${game.round} • ${phasePretty}</span></div>`;
   if (firingMode && (!selectedFiringShipUid || !canShipFire(state, activeViewer, selectedFiringShipUid))) {
     selectedFiringShipUid = pickDefaultFiringShip(activeViewer);
   }
@@ -452,8 +492,6 @@ function render(): void {
   leftPanel.innerHTML = `
     <div class="section">
       <h1>Moving Battleships</h1>
-      <p class="stat">Round ${game.round} • Phase: ${game.phase.replace('_', ' ')}</p>
-      <p class="turn-indicator">${turnIndicator}</p>
       <p class="stat">Perspective: ${me.name}</p>
     </div>
 
@@ -462,6 +500,12 @@ function render(): void {
       <div class="row">
         <button id="rotateBtn">Rotate (R): ${placementMode ? placementOrientation : moveMode ? movementOrientation : targetingOrientation}</button>
         <button id="menuBtn">Back to Menu</button>
+      </div>
+      <div class="row" style="margin-top:8px; gap:8px; align-items:center;">
+        <button id="soundBtn">Sound: ${soundEnabled ? 'On' : 'Off'}</button>
+        <label class="stat" style="display:flex; align-items:center; gap:6px;">Vol
+          <input id="soundVol" type="range" min="0" max="1" step="0.05" value="${soundVolume}" style="width:120px;" />
+        </label>
       </div>
       <p class="notice ${noticeKind}">${notice}</p>
     </div>
@@ -627,6 +671,10 @@ function render(): void {
         orientation: ship.orientation,
         skip: true,
       });
+      if (soundEnabled) {
+        void primeAudio();
+        sfx.play('move', 0.6);
+      }
       setNotice('Ship marked skip.', 'ok');
       await maybeFinalizeMovementPhase();
       render();
@@ -640,17 +688,32 @@ function render(): void {
   }
 
   (document.querySelector('#rotateBtn') as HTMLButtonElement).onclick = () => {
-    if (placementMode) {
-      placementOrientation = placementOrientation === 'H' ? 'V' : 'H';
-    } else if (moveMode) {
-      movementOrientation = movementOrientation === 'H' ? 'V' : 'H';
-    } else if (firingMode) {
+    const phase = game?.phase;
+    if (phase === 'firing_p1' || phase === 'firing_p2') {
       targetingOrientation = targetingOrientation === 'H' ? 'V' : 'H';
-    } else {
-      // default: rotate movement as a fallback
+    } else if (phase === 'movement_p1' || phase === 'movement_p2') {
       movementOrientation = movementOrientation === 'H' ? 'V' : 'H';
+    } else {
+      placementOrientation = placementOrientation === 'H' ? 'V' : 'H';
     }
     render();
+  };
+
+  (document.querySelector('#soundBtn') as HTMLButtonElement).onclick = async () => {
+    soundEnabled = !soundEnabled;
+    if (soundEnabled) {
+      await primeAudio();
+      sfx.play('move', 0.8);
+    } else {
+      sfx.disable();
+      audioPrimed = false;
+    }
+    render();
+  };
+
+  (document.querySelector('#soundVol') as HTMLInputElement).oninput = (ev) => {
+    soundVolume = Number((ev.target as HTMLInputElement).value);
+    sfx.setVolume(soundVolume);
   };
   (document.querySelector('#menuBtn') as HTMLButtonElement).onclick = () => startMenu();
 
@@ -700,25 +763,43 @@ async function doHumanFire(playerId: PlayerId, shipUid: string, target: Coord): 
     targets,
     hitFlags,
     (i) => {
+      // per-shell impact
       const r = results[i];
       if (!r || !game) {
         return;
       }
       const t = r.target;
       if (r.hit && r.hitShipUid) {
+        if (soundEnabled) {
+          sfx.play('explosion', 1);
+        }
         attacker.ephemeralHits.add(`${t.x},${t.y}`);
         applyMarkerOnce(playerId, { board: 'target', shipUid: r.hitShipUid, target: { ...t } });
         applyMarkerOnce(defenderId, { board: 'own', shipUid: r.hitShipUid, target: { ...t } });
       } else {
+        if (soundEnabled) {
+          sfx.play('splash', 0.9);
+        }
         attacker.misses.add(`${t.x},${t.y}`);
       }
       if (r.sunkShipUid) {
+        if (soundEnabled) {
+          sfx.play('sink', 1);
+        }
         scene.sinkShip(r.sunkShipUid);
       }
       renderSceneOnly();
     },
     { targetBoard, incomingFromSky, salvoDelayMs: 80 }
   );
+
+  // cannon sounds on fire
+  if (soundEnabled) {
+    void primeAudio();
+    for (let i = 0; i < targets.length; i += 1) {
+      window.setTimeout(() => sfx.play('cannon', 1), i * 80);
+    }
+  }
 
   const hitCount = results.filter((r) => r.hit).length;
   setNotice(hitCount ? `Salvo: ${hitCount}/${results.length} hits.` : 'Salvo missed.', hitCount ? 'ok' : '');

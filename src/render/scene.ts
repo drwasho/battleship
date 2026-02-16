@@ -67,10 +67,13 @@ export interface SceneState {
   previewColor: number;
   selectedOwnCell?: Coord;
   selectedTargetCell?: Coord;
+  pulseShipUid?: string | null;
 }
 
 export class BattleScene {
   private renderer: THREE.WebGLRenderer;
+  private pulseShipUid: string | null = null;
+  private pulsePhase = 0;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private ownBoard = new THREE.Group();
@@ -244,6 +247,7 @@ export class BattleScene {
   }
 
   renderState(state: SceneState): void {
+    this.pulseShipUid = state.pulseShipUid ?? null;
     this.rebuildShips(state.ownShips, state.firingReadyShipUids, state.firingSpentShipUids);
     this.rebuildImpactSmokes(state.ephemeralImpactMarkers, state.ownShips);
     this.rebuildMarkers(state.targetMisses, state.targetEphemeralHits);
@@ -526,6 +530,16 @@ export class BattleScene {
     const group = new THREE.Group();
     const puffs: SmokePuff[] = [];
 
+    // Hit dot for own-ship impacts (matches the target-board red hit marker vibe)
+    const hitDot = new THREE.Mesh(
+      new THREE.SphereGeometry(0.14, 10, 10),
+      new THREE.MeshBasicMaterial({ color: 0xff5b4a, transparent: true, opacity: 0.95 })
+    );
+    hitDot.name = 'hitDot';
+    hitDot.position.set(0, 0.05, 0);
+    hitDot.visible = false;
+    group.add(hitDot);
+
     for (let i = 0; i < 2; i += 1) {
       const scorch = new THREE.Mesh(
         new THREE.RingGeometry(0.01, 0.13 + i * 0.03, 16),
@@ -565,6 +579,11 @@ export class BattleScene {
   }
 
   private positionImpactSmoke(group: THREE.Group, marker: EphemeralImpactMarker, ownShips: ShipInstance[]): void {
+    const hitDot = group.getObjectByName('hitDot') as THREE.Mesh | null;
+    if (hitDot) {
+      hitDot.visible = marker.board === 'own';
+    }
+
     if (marker.board === 'target') {
       if (group.parent !== this.impactSmokeLayer) {
         group.parent?.remove(group);
@@ -676,7 +695,9 @@ export class BattleScene {
 
     // Smooth ship motion for movement planning previews.
     const lerp = 1 - Math.exp(-dt * 12);
-    for (const [, ms] of this.ships) {
+    this.pulsePhase += dt;
+    const pulse = 0.5 + 0.5 * Math.sin(this.pulsePhase * (Math.PI * 2) * 1.05);
+    for (const [uid, ms] of this.ships) {
       if (ms.sunkAnim) {
         continue;
       }
@@ -684,6 +705,14 @@ export class BattleScene {
       ms.group.position.z += (ms.targetPos.z - ms.group.position.z) * lerp;
       ms.group.position.y = ms.baseY;
       ms.group.rotation.y += (ms.targetRotY - ms.group.rotation.y) * lerp;
+
+      // Subtle pulse highlight (movement selection)
+      const isPulse = this.pulseShipUid && uid === this.pulseShipUid;
+      for (const mat of ms.hullMaterials) {
+        const base = isPulse ? 0.28 : 0.16;
+        const extra = isPulse ? 0.34 * pulse : 0;
+        mat.emissiveIntensity = base + extra;
+      }
     }
 
     for (const [, ms] of this.ships) {

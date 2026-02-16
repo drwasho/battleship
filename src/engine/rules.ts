@@ -250,25 +250,9 @@ export function canMoveShip(state: GameState, playerId: PlayerId, order: MoveOrd
     return false;
   }
 
+  // Simpler movement: ships "reposition" within their move range. We only validate the final
+  // footprint (no path tracing / direction-based constraints).
   const occ = occupyMap(state.players, ship.uid);
-  let cursor = cloneCoord(ship.anchor);
-  while (cursor.x !== order.to.x) {
-    cursor = { ...cursor, x: cursor.x + Math.sign(order.to.x - cursor.x) };
-    for (const c of shipCells({ ...ship, anchor: cursor })) {
-      if (!inBounds(c) || occ.has(key(c))) {
-        return false;
-      }
-    }
-  }
-  while (cursor.y !== order.to.y) {
-    cursor = { ...cursor, y: cursor.y + Math.sign(order.to.y - cursor.y) };
-    for (const c of shipCells({ ...ship, anchor: cursor })) {
-      if (!inBounds(c) || occ.has(key(c))) {
-        return false;
-      }
-    }
-  }
-
   const finalShip = translateShip({ ...ship, orientation: order.orientation }, order.to);
   for (const c of shipCells(finalShip)) {
     if (!inBounds(c) || occ.has(key(c))) {
