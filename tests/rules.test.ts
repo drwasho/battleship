@@ -148,7 +148,7 @@ describe('rules engine', () => {
     expect(nextFiringPlayer(state, 0)).toBeNull();
   });
 
-  it('resolves simultaneous movement and rejects overlap', () => {
+  it('resolves simultaneous movement independently per board', () => {
     const state = createInitialState('2p');
     const p1 = state.players[0];
     const p2 = state.players[1];
@@ -158,16 +158,16 @@ describe('rules engine', () => {
     placeShip(p1, s1.uid, { x: 0, y: 0 }, 'H');
     placeShip(p2, s2.uid, { x: 0, y: 3 }, 'H');
 
+    // Even if both players choose the same destination coordinates, they are on separate boards.
     const result = resolveMovement(
       state,
       [{ shipUid: s1.uid, to: { x: 0, y: 1 }, orientation: 'H' }],
       [{ shipUid: s2.uid, to: { x: 0, y: 1 }, orientation: 'H' }]
     );
 
-    expect(result.rejected).toContain(s1.uid);
-    expect(result.rejected).toContain(s2.uid);
-    expect(s1.anchor).toEqual({ x: 0, y: 0 });
-    expect(s2.anchor).toEqual({ x: 0, y: 3 });
+    expect(result.rejected).toEqual([]);
+    expect(s1.anchor).toEqual({ x: 0, y: 1 });
+    expect(s2.anchor).toEqual({ x: 0, y: 1 });
   });
 
   it('creates random legal AI fleet placements', () => {

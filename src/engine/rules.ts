@@ -252,7 +252,7 @@ export function canMoveShip(state: GameState, playerId: PlayerId, order: MoveOrd
 
   // Simpler movement: ships "reposition" within their move range. We only validate the final
   // footprint (no path tracing / direction-based constraints).
-  const occ = occupyMap(state.players, ship.uid);
+  const occ = occupyMap([state.players[playerId]], ship.uid);
   const finalShip = translateShip({ ...ship, orientation: order.orientation }, order.to);
   for (const c of shipCells(finalShip)) {
     if (!inBounds(c) || occ.has(key(c))) {
@@ -289,8 +289,11 @@ export function resolveMovement(state: GameState, p1Orders: MoveOrder[], p2Order
     applied.push(ship.uid);
   }
 
-  const endOcc = new Map<string, string>();
+  // Overlap is only checked within each player's own board.
+  const endOccByPlayer: [Map<string, string>, Map<string, string>] = [new Map(), new Map()];
   for (const player of state.players) {
+    const pid = player.id;
+    const endOcc = endOccByPlayer[pid];
     for (const ship of player.ships) {
       if (!ship.placed || ship.sunk) {
         continue;
