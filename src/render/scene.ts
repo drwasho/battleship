@@ -419,7 +419,8 @@ export class BattleScene {
     const pose = this.shipWorldPose(ship);
     const v = cellWorld.clone().sub(new THREE.Vector3(pose.pos.x, baseY, pose.pos.z));
     v.applyAxisAngle(new THREE.Vector3(0, 1, 0), -pose.rotY);
-    v.y = 0.22;
+    // y is handled by callers depending on marker type
+    v.y = 0;
     return v;
   }
 
@@ -440,7 +441,8 @@ export class BattleScene {
         const hull = this.buildShipHull(shipCells(ship).length * 0.9, ship.typeId);
         g.add(hull.group);
         const hitMarkers = new THREE.Group();
-        hitMarkers.position.set(0, 0.24, 0);
+        // No offset here; markers are positioned in ship-local space.
+        hitMarkers.position.set(0, 0, 0);
         g.add(hitMarkers);
         this.shipLayer.add(g);
         ms = {
@@ -488,6 +490,7 @@ export class BattleScene {
           new THREE.MeshBasicMaterial({ color: 0xff5b4a })
         );
         dot.position.copy(local);
+        dot.position.y = 0.24;
         ms.hitMarkers.add(dot);
       }
 
@@ -717,6 +720,7 @@ export class BattleScene {
 
     const local = this.cellWorldToShipLocal(ship, marker.target, meshShip.baseY);
     group.position.copy(local);
+    group.position.y = 0.22;
     group.rotation.y = 0;
   }
 
