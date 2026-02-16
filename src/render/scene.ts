@@ -76,6 +76,7 @@ export class BattleScene {
   private pulseShipUid: string | null = null;
   private pulsePhase = 0;
   private radarGroup = new THREE.Group();
+  private radarSweepPivot = new THREE.Group();
   private radarSweep: THREE.Mesh | null = null;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
@@ -332,6 +333,7 @@ export class BattleScene {
   private buildRadarOverlay(): void {
     // A subtle radar sweep + radial spokes on the targeting board.
     this.radarGroup.clear();
+    this.radarSweepPivot.clear();
     const center = new THREE.Vector3(this.targetOffset.x, 0.12, this.targetOffset.z);
     this.radarGroup.position.copy(center);
 
@@ -362,8 +364,9 @@ export class BattleScene {
     const sweep = new THREE.Mesh(sweepGeom, sweepMat);
     sweep.rotation.x = -Math.PI / 2;
     sweep.position.set(radius / 2, 0.002, 0);
-    this.radarGroup.add(sweep);
+    this.radarSweepPivot.add(sweep);
     this.radarSweep = sweep;
+    this.radarGroup.add(this.radarSweepPivot);
 
     // faint ring
     const ring = new THREE.Mesh(
@@ -788,8 +791,8 @@ export class BattleScene {
       }
     }
 
-    // Radar sweep rotation (spin around the targeting board center).
-    this.radarGroup.rotation.y = this.pulsePhase * 1.1;
+    // Radar sweep rotation (spin the thick sweep only; spokes stay fixed)
+    this.radarSweepPivot.rotation.y = this.pulsePhase * 1.1;
 
     for (const [, ms] of this.ships) {
       if (!ms.sunkAnim) {
