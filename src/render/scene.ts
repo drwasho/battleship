@@ -454,7 +454,8 @@ export class BattleScene {
       }
 
       // Persistent own-ship hit markers (so damage is obvious during movement).
-      // Use the same placement logic as impact smoke so markers stay glued to the hull.
+      // Place markers by projecting the hit board cell into world space and converting into
+      // the ship group's local space. This avoids fragile hand-tuned offsets.
       const hits = ship.hits instanceof Set ? ship.hits : new Set<number>();
       const cells = shipCells(ship);
       ms.hitMarkers.clear();
@@ -463,16 +464,15 @@ export class BattleScene {
         if (!cell) {
           continue;
         }
-        const local = this.impactOffsetForShipCell(ship, cell);
-        if (!local) {
-          continue;
-        }
+        const world = this.worldForCell('own', cell);
+        world.y = ms.baseY + 0.22;
+        const local = ms.group.worldToLocal(world.clone());
+
         const dot = new THREE.Mesh(
           new THREE.SphereGeometry(0.12, 10, 10),
           new THREE.MeshBasicMaterial({ color: 0xff5b4a })
         );
         dot.position.copy(local);
-        dot.position.y += 0.02;
         ms.hitMarkers.add(dot);
       }
 
@@ -707,8 +707,7 @@ export class BattleScene {
 
     const ship = ownShips.find((s) => s.uid === marker.shipUid && s.placed);
     const meshShip = this.ships.get(marker.shipUid);
-    const local = ship ? this.impactOffsetForShipCell(ship, marker.target) : null;
-    if (!meshShip || !local) {
+    if (!meshShip || !ship) {
       group.parent?.remove(group);
       return;
     }
@@ -717,6 +716,11 @@ export class BattleScene {
       group.parent?.remove(group);
       meshShip.group.add(group);
     }
+
+    // Convert the hit cell's world position into the ship group's local space.
+    const world = this.worldForCell('own', marker.target);
+    world.y = meshShip.baseY + 0.22;
+    const local = meshShip.group.worldToLocal(world);
     group.position.copy(local);
     group.rotation.y = 0;
   }
