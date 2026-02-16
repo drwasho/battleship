@@ -454,19 +454,25 @@ export class BattleScene {
       }
 
       // Persistent own-ship hit markers (so damage is obvious during movement).
-      // Defensive: older/invalid state could have hits missing or non-Set.
+      // Use the same placement logic as impact smoke so markers stay glued to the hull.
       const hits = ship.hits instanceof Set ? ship.hits : new Set<number>();
+      const cells = shipCells(ship);
       ms.hitMarkers.clear();
       for (const idx of hits) {
+        const cell = cells[idx];
+        if (!cell) {
+          continue;
+        }
+        const local = this.impactOffsetForShipCell(ship, cell);
+        if (!local) {
+          continue;
+        }
         const dot = new THREE.Mesh(
           new THREE.SphereGeometry(0.12, 10, 10),
           new THREE.MeshBasicMaterial({ color: 0xff5b4a })
         );
-        if (ship.orientation === 'H') {
-          dot.position.set(idx - (SHIP_BY_ID[ship.typeId].size - 1) * 0.45, 0.02, 0);
-        } else {
-          dot.position.set(0, 0.02, idx - (SHIP_BY_ID[ship.typeId].size - 1) * 0.45);
-        }
+        dot.position.copy(local);
+        dot.position.y += 0.02;
         ms.hitMarkers.add(dot);
       }
 

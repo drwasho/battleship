@@ -103,7 +103,26 @@ button.selected {
   top: 10px;
   left: 10px;
   right: 10px;
-  z-index: 5;
+  z-index: 6;
+  pointer-events: none;
+}
+
+.phase-prompt {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  max-width: min(780px, calc(100% - 24px));
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(79, 118, 146, 0.55);
+  background: rgba(238, 248, 255, 0.78);
+  backdrop-filter: blur(6px);
+  color: rgba(17, 50, 74, 0.94);
+  font-weight: 900;
+  font-size: 14px;
+  text-align: center;
   pointer-events: none;
 }
 

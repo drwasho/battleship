@@ -51,6 +51,10 @@ mapLabels.innerHTML = `
 `;
 mainView.appendChild(mapLabels);
 
+const phasePrompt = document.createElement('div');
+phasePrompt.className = 'phase-prompt';
+mainView.appendChild(phasePrompt);
+
 function updateMapLabelPositions(): void {
   const left = mapLabels.children[0] as HTMLElement | undefined;
   const right = mapLabels.children[1] as HTMLElement | undefined;
@@ -294,6 +298,8 @@ function startMenu(): void {
   screen = 'menu';
   activeViewer = 0;
   topbar.innerHTML = '';
+  phasePrompt.textContent = '';
+  phasePrompt.style.display = 'none';
   clearNotice();
   leftPanel.innerHTML = `
     <div class="section">
@@ -417,6 +423,39 @@ function shipNameFromUid(uid: string): string {
   const parts = uid.split('-');
   const maybeType = parts.slice(1).join('-') as ShipTypeId;
   return SHIP_BY_ID[maybeType]?.name ?? uid;
+}
+
+function phasePromptText(): string {
+  if (!game) {
+    return '';
+  }
+
+  const phase = game.phase;
+  const pid = currentPlayerForPhase();
+  const isMyTurn = pid !== null && pid === activeViewer;
+
+  if (phase.startsWith('placement_')) {
+    return isMyTurn ? 'Place your ships: select a ship, then click “Your fleet”.' : 'Waiting for other player to place ships…';
+  }
+
+  if (phase.startsWith('firing_')) {
+    return isMyTurn ? 'Fire: select a ship, then click “Targeting radar” (R rotates).' : 'Waiting for other player to fire…';
+  }
+
+  if (phase.startsWith('movement_')) {
+    if (!isMyTurn) {
+      return 'Waiting for other player to plan movement…';
+    }
+    const needed = game.players[activeViewer].ships.filter((s) => s.placed && !s.sunk).map((s) => s.uid);
+    const done = needed.every((uid) => plannedMoves[activeViewer].has(uid));
+    return done ? 'Movement planned. Waiting…' : 'Plan movement: select a ship, then click its destination on “Your fleet”.';
+  }
+
+  if (phase === 'game_over') {
+    return 'Game over.';
+  }
+
+  return '';
 }
 
 function turnIndicatorText(): string {
@@ -566,6 +605,8 @@ function render(): void {
   const turnIndicator = turnIndicatorText();
   const phasePretty = game.phase.replace('_', ' ');
   topbar.innerHTML = `<div class="topbar-inner"><span class="topbar-title">${turnIndicator || ''}</span><span class="topbar-sub">Round ${game.round} • ${phasePretty}</span></div>`;
+  phasePrompt.textContent = phasePromptText();
+  phasePrompt.style.display = phasePrompt.textContent ? 'block' : 'none';
   if (firingMode && (!selectedFiringShipUid || !canShipFire(state, activeViewer, selectedFiringShipUid))) {
     selectedFiringShipUid = pickDefaultFiringShip(activeViewer);
   }
@@ -1034,6 +1075,8 @@ async function startOnline(): Promise<void> {
   game = null;
   activeViewer = 0;
   topbar.innerHTML = '';
+  phasePrompt.textContent = '';
+  phasePrompt.style.display = 'none';
   clearNotice();
 
   if (!SERVER_URL) {
