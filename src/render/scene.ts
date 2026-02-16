@@ -350,7 +350,7 @@ export class BattleScene {
     this.radarGroup.add(spokesMesh);
 
     // sweep line (thin triangle/plane rotated around Y)
-    const sweepGeom = new THREE.PlaneGeometry(radius, 0.06);
+    const sweepGeom = new THREE.PlaneGeometry(radius, 0.08);
     const sweepMat = new THREE.MeshBasicMaterial({
       color: 0x7bffbf,
       transparent: true,
@@ -788,9 +788,8 @@ export class BattleScene {
       }
     }
 
-    if (this.radarSweep) {
-      this.radarSweep.rotation.z = this.pulsePhase * 1.1;
-    }
+    // Radar sweep rotation (spin around the targeting board center).
+    this.radarGroup.rotation.y = this.pulsePhase * 1.1;
 
     for (const [, ms] of this.ships) {
       if (!ms.sunkAnim) {
