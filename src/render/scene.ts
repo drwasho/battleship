@@ -88,6 +88,28 @@ export class BattleScene {
   getBoardCenterX(board: BoardKind): number {
     return board === 'own' ? this.ownOffset.x : this.targetOffset.x;
   }
+
+  worldToScreen(world: THREE.Vector3): { x: number; y: number } {
+    // Convert world position to screen pixel coords relative to the renderer canvas.
+    const v = world.clone().project(this.camera);
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    return {
+      x: (v.x * 0.5 + 0.5) * rect.width,
+      y: (-v.y * 0.5 + 0.5) * rect.height,
+    };
+  }
+
+  getCanvasRect(): DOMRect {
+    return this.renderer.domElement.getBoundingClientRect();
+  }
+
+  getBoardLabelScreen(board: BoardKind): { x: number; y: number } {
+    // Place label just below the near edge of the board (toward the camera).
+    const base = board === 'own' ? this.ownOffset : this.targetOffset;
+    const p = new THREE.Vector3(base.x, 0.12, base.z + 5.55);
+    const s = this.worldToScreen(p);
+    return { x: s.x, y: s.y + 8 };
+  }
   private raycaster = new THREE.Raycaster();
   private mouse = new THREE.Vector2();
   private boardTiles: THREE.Mesh[] = [];

@@ -52,26 +52,32 @@ mapLabels.innerHTML = `
 mainView.appendChild(mapLabels);
 
 function updateMapLabelPositions(): void {
-  const rect = mainView.getBoundingClientRect();
   const left = mapLabels.children[0] as HTMLElement | undefined;
   const right = mapLabels.children[1] as HTMLElement | undefined;
   if (!left || !right) {
     return;
   }
-  const ownX = scene.getBoardCenterX('own');
-  const targetX = scene.getBoardCenterX('target');
 
-  // The boards are laid out symmetrically around world origin, and the camera is centered,
-  // so mapping X proportionally into the mainView width is a stable approximation.
-  const worldSpan = 16; // ~ -8 .. +8 (from offsets)
-  const toPx = (x: number) => ((x + worldSpan / 2) / worldSpan) * rect.width;
+  const mainRect = mainView.getBoundingClientRect();
+  const canvasRect = scene.getCanvasRect();
 
-  left.style.position = 'absolute';
-  right.style.position = 'absolute';
-  left.style.left = `${toPx(ownX) - left.offsetWidth / 2}px`;
-  right.style.left = `${toPx(targetX) - right.offsetWidth / 2}px`;
-  left.style.bottom = '0px';
-  right.style.bottom = '0px';
+  // getBoardLabelScreen gives pixel coords relative to the canvas.
+  const own = scene.getBoardLabelScreen('own');
+  const target = scene.getBoardLabelScreen('target');
+
+  const toMain = (p: { x: number; y: number }) => ({
+    x: canvasRect.left - mainRect.left + p.x,
+    y: canvasRect.top - mainRect.top + p.y,
+  });
+
+  const ownPx = toMain(own);
+  const targetPx = toMain(target);
+
+  left.style.left = `${ownPx.x - left.offsetWidth / 2}px`;
+  right.style.left = `${targetPx.x - right.offsetWidth / 2}px`;
+
+  left.style.top = `${ownPx.y}px`;
+  right.style.top = `${targetPx.y}px`;
 }
 
 window.addEventListener('resize', () => updateMapLabelPositions());
@@ -541,6 +547,7 @@ function renderSceneOnly(): void {
     }
   }
   scene.renderState(sceneState);
+  updateMapLabelPositions();
 }
 
 function render(): void {
