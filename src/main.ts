@@ -23,6 +23,8 @@ import {
 import { createInitialState } from './engine/state';
 import type { Coord, GameState, MoveOrder, Orientation, PlayerId, ShipInstance, ShipTypeId } from './engine/types';
 import { sfx } from './audio/sfx';
+import { OnlineClient } from './online/client';
+import type { RoomPublicInfo, RoomState, Role } from './online/types';
 import { BattleScene } from './render/scene';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
@@ -78,6 +80,25 @@ document.body.appendChild(passOverlay);
 const scene = new BattleScene(mainView);
 
 let game: GameState | null = null;
+
+type Screen = 'menu' | 'local' | 'online';
+let screen: Screen = 'menu';
+
+const SERVER_URL = (import.meta as any).env?.VITE_SERVER_URL as string | undefined;
+
+type OnlineState = {
+  sessionId: string;
+  name: string;
+  connected: boolean;
+  rooms: RoomPublicInfo[];
+  room: RoomState | null;
+  role: Role;
+  seat: 'p1' | 'p2' | 'spectator' | null;
+  notice: string;
+};
+
+let online: OnlineState | null = null;
+let onlineClient: OnlineClient | null = null;
 let rng = new SeededRng(1337);
 let activeViewer: PlayerId = 0;
 let notice = '';
@@ -215,6 +236,7 @@ scene.getCanvas().addEventListener('click', async (ev) => {
 
 function startMenu(): void {
   game = null;
+  screen = 'menu';
   activeViewer = 0;
   topbar.innerHTML = '';
   clearNotice();
@@ -225,6 +247,7 @@ function startMenu(): void {
       <div class="menu">
         <button id="start1p">1 Player vs Easy AI</button>
         <button id="start2p">2 Player Hotseat</button>
+        <button id="startOnline">Online Multiplayer (Lobby)</button>
       </div>
     </div>
     <div class="section stat">
@@ -234,6 +257,7 @@ function startMenu(): void {
   rightPanel.innerHTML = '';
   (document.querySelector('#start1p') as HTMLButtonElement).onclick = () => startGame('1p');
   (document.querySelector('#start2p') as HTMLButtonElement).onclick = () => startGame('2p');
+  (document.querySelector('#startOnline') as HTMLButtonElement).onclick = () => startOnline();
 
   scene.renderState({
     ownShips: [],
@@ -246,6 +270,7 @@ function startMenu(): void {
 }
 
 function startGame(mode: '1p' | '2p'): void {
+  screen = 'local';
   game = createInitialState(mode);
   rng = new SeededRng(90210);
   activeViewer = 0;
@@ -946,6 +971,245 @@ async function maybeRunAI(): Promise<void> {
     await resolveMovementPhase();
     aiBusy = false;
   }
+}
+
+async function startOnline(): Promise<void> {
+  screen = 'online';
+  game = null;
+  activeViewer = 0;
+  topbar.innerHTML = '';
+  clearNotice();
+
+  if (!SERVER_URL) {
+    leftPanel.innerHTML = `
+      <div class="section">
+        <h1>Online Multiplayer</h1>
+        <p class="notice error">Missing VITE_SERVER_URL. Set it in Vercel env vars.</p>
+        <button id="backBtn">Back</button>
+      </div>
+    `;
+    rightPanel.innerHTML = '';
+    (document.querySelector('#backBtn') as HTMLButtonElement).onclick = () => startMenu();
+    return;
+  }
+
+  const serverUrl = SERVER_URL;
+
+  const { getOrCreateDisplayName, getOrCreateSessionId, setDisplayName } = await import('./online/state');
+  const { formatRoomRow, rosterText } = await import('./online/ui');
+
+  if (!online) {
+    online = {
+      sessionId: getOrCreateSessionId(),
+      name: getOrCreateDisplayName(),
+      connected: false,
+      rooms: [],
+      room: null,
+      role: 'player',
+      seat: null,
+      notice: '',
+    };
+  }
+
+  if (!onlineClient) {
+    onlineClient = new OnlineClient({ serverUrl });
+
+    onlineClient.socket.on('connect', () => {
+      if (!online) return;
+      online.connected = true;
+      onlineClient!.hello(online.sessionId, online.name);
+      renderOnline();
+    });
+    onlineClient.socket.on('disconnect', () => {
+      if (!online) return;
+      online.connected = false;
+      renderOnline();
+    });
+    onlineClient.socket.on('error_msg', (p) => {
+      if (!online) return;
+      online.notice = p.message;
+      renderOnline();
+    });
+    onlineClient.socket.on('info_msg', (p) => {
+      if (!online) return;
+      online.notice = p.message;
+      renderOnline();
+    });
+    onlineClient.socket.on('room_created', (p) => {
+      if (!online) return;
+      onlineClient!.joinRoom(p.code, 'player');
+    });
+    onlineClient.socket.on('join_ok', (p) => {
+      if (!online) return;
+      online.role = p.role;
+      online.seat = p.seat;
+      online.notice = `Joined room ${p.code} as ${p.role} (${p.seat}).`;
+      renderOnline();
+    });
+    onlineClient.socket.on('room_state', (p) => {
+      if (!online) return;
+      online.room = p.room;
+      renderOnline();
+    });
+  }
+
+  async function refreshRooms(): Promise<void> {
+    if (!onlineClient || !online) return;
+    try {
+      online.rooms = await onlineClient.listRooms(serverUrl);
+    } catch (e) {
+      online.notice = String(e);
+    }
+  }
+
+  function renderOnline(): void {
+    if (!online) return;
+
+    leftPanel.innerHTML = `
+      <div class="section">
+        <h1>Online Multiplayer</h1>
+        <p class="stat">Server: ${serverUrl}</p>
+        <p class="stat">Status: ${online.connected ? 'connected' : 'connecting…'}</p>
+        <div class="row" style="margin-top:8px; align-items:center;">
+          <label class="stat">Name</label>
+          <input id="nameInput" value="${online.name.replace(/"/g, '&quot;')}" style="flex:1; min-width: 160px;" />
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <button id="createRoomBtn">Create Room</button>
+          <input id="joinCode" placeholder="Room code" style="width: 120px;" />
+          <button id="joinRoomBtn">Join</button>
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <button id="refreshRoomsBtn">Refresh Rooms</button>
+          <button id="backToMenu">Back</button>
+        </div>
+        <p class="notice ${online.notice ? 'error' : ''}">${online.notice || ''}</p>
+      </div>
+
+      <div class="section">
+        <h2>Public Rooms</h2>
+        <div class="menu" style="gap:6px;">
+          ${online.rooms
+            .map((r) => `<button class="roomBtn" data-code="${r.code}">${formatRoomRow(r)}</button>`)
+            .join('') || '<p class="stat">No rooms yet.</p>'}
+        </div>
+      </div>
+    `;
+
+    if (!online.room) {
+      rightPanel.innerHTML = `
+        <div class="section">
+          <h2>Lobby</h2>
+          <p class="stat">Create or join a room to chat. Gameplay sync comes next.</p>
+        </div>
+      `;
+    } else {
+      rightPanel.innerHTML = `
+        <div class="section">
+          <h2>Room ${online.room.code}</h2>
+          <p class="stat">${online.room.title}</p>
+          <pre class="stat" style="white-space: pre-wrap;">${rosterText(online.room)}</pre>
+          <div class="row" style="margin-top:8px;">
+            <button id="leaveRoomBtn">Leave Room</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>Chat</h2>
+          <div class="chatLog" id="chatLog">
+            ${online.room.chat
+              .map((m) => `<div class="chatMsg"><span class="chatName">${m.name}</span><span class="chatText">${m.text}</span></div>`)
+              .join('')}
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <input id="chatInput" placeholder="Message…" style="flex:1;" />
+            <button id="chatSendBtn">Send</button>
+          </div>
+        </div>
+      `;
+    }
+
+    scene.renderState({
+      ownShips: [],
+      targetMisses: new Set(),
+      targetEphemeralHits: new Set(),
+      ephemeralImpactMarkers: [],
+      previewCells: [],
+      previewColor: 0x66c9f0,
+    });
+
+    (document.querySelector('#backToMenu') as HTMLButtonElement).onclick = () => startMenu();
+
+    const nameEl = document.querySelector('#nameInput') as HTMLInputElement;
+    nameEl.onchange = () => {
+      if (!online) return;
+      online.name = nameEl.value.trim() || online.name;
+      setDisplayName(online.name);
+      onlineClient?.hello(online.sessionId, online.name);
+      renderOnline();
+    };
+
+    (document.querySelector('#createRoomBtn') as HTMLButtonElement).onclick = () => {
+      if (!onlineClient || !online) return;
+      onlineClient.createRoom(`${online.name}'s room`);
+    };
+
+    (document.querySelector('#joinRoomBtn') as HTMLButtonElement).onclick = () => {
+      if (!onlineClient) return;
+      const code = (document.querySelector('#joinCode') as HTMLInputElement).value.trim();
+      if (!code) return;
+      onlineClient.joinRoom(code, 'player');
+    };
+
+    (document.querySelector('#refreshRoomsBtn') as HTMLButtonElement).onclick = async () => {
+      await refreshRooms();
+      renderOnline();
+    };
+
+    document.querySelectorAll('button.roomBtn').forEach((b) => {
+      (b as HTMLButtonElement).onclick = () => {
+        const code = (b as HTMLButtonElement).dataset.code!;
+        onlineClient?.joinRoom(code, 'player');
+      };
+    });
+
+    const leaveBtn = document.querySelector('#leaveRoomBtn') as HTMLButtonElement | null;
+    if (leaveBtn) {
+      leaveBtn.onclick = () => {
+        onlineClient?.leaveRoom();
+        if (online) {
+          online.room = null;
+          online.seat = null;
+          online.role = 'player';
+        }
+        renderOnline();
+      };
+    }
+
+    const sendBtn = document.querySelector('#chatSendBtn') as HTMLButtonElement | null;
+    const input = document.querySelector('#chatInput') as HTMLInputElement | null;
+    if (sendBtn && input && online.room) {
+      const send = () => {
+        const text = input.value.trim();
+        if (!text) return;
+        onlineClient?.chatSend(online!.room!.code, text);
+        input.value = '';
+      };
+      sendBtn.onclick = send;
+      input.onkeydown = (ev) => {
+        if (ev.key === 'Enter') {
+          send();
+        }
+      };
+      const log = document.querySelector('#chatLog') as HTMLDivElement | null;
+      if (log) {
+        log.scrollTop = log.scrollHeight;
+      }
+    }
+  }
+
+  await refreshRooms();
+  renderOnline();
 }
 
 startMenu();

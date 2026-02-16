@@ -1,0 +1,15 @@
+{
+  "name": "Moving Battleships",
+  "short_name": "Battleships",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#2f678d",
+  "theme_color": "#2f678d",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
